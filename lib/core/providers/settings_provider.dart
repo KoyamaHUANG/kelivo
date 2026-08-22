@@ -714,6 +714,7 @@ class SettingsProvider extends ChangeNotifier {
     : _loaded = Future<void>.value();
 
   final BusinessPreferences _preferences;
+  BusinessPreferences get businessPreferences => _preferences;
   late final Future<void> _loaded;
   Future<void> get loaded => _loaded;
 

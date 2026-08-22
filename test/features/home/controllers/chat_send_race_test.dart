@@ -18,7 +18,9 @@ import 'package:Kelivo/core/providers/assistant_provider.dart';
 import 'package:Kelivo/core/providers/mcp_provider.dart';
 import 'package:Kelivo/core/providers/settings_provider.dart';
 import 'package:Kelivo/core/services/chat/chat_service.dart';
+import 'package:Kelivo/core/services/logging/context_logger.dart';
 import 'package:Kelivo/core/services/mcp/mcp_tool_service.dart';
+import 'package:Kelivo/core/services/network/request_logger.dart';
 import 'package:Kelivo/features/chat/widgets/chat_message_widget.dart'
     show ToolUIPart;
 import 'package:Kelivo/features/home/controllers/home_page_controller.dart';
@@ -57,13 +59,62 @@ void main() {
   late SettingsProvider settings;
   late AssistantProvider assistantProvider;
   var streamRequestCount = 0;
+  var heartbeatEnabled = false;
+  final proactiveEvents = <Map<String, Object?>>[];
+  final streamedChatHeaders = <Map<String, String?>>[];
 
   Future<void> handleApiRequest(HttpRequest request) async {
+    // The client capability probe is intentionally a GET before the first
+    // real chat. This ordinary OpenAI mock does not implement the extension.
+    if (request.method == 'GET' &&
+        request.uri.path.endsWith('/proactive-events')) {
+      if (!heartbeatEnabled) {
+        request.response.statusCode = HttpStatus.notFound;
+        await request.response.close();
+        return;
+      }
+      final conversationId =
+          request.uri.queryParameters['conversation_id'] ?? '';
+      final afterSeq =
+          int.tryParse(request.uri.queryParameters['after_seq'] ?? '') ?? 0;
+      final events =
+          proactiveEvents
+              .where(
+                (event) =>
+                    event['conversation_id'] == conversationId &&
+                    (event['seq'] as int) > afterSeq,
+              )
+              .toList()
+            ..sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
+      final nextAfterSeq = events.isEmpty
+          ? afterSeq
+          : events.last['seq'] as int;
+      request.response.statusCode = HttpStatus.ok;
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(
+        jsonEncode({
+          'object': 'proactive_event_list',
+          'conversation_id': conversationId,
+          'data': events,
+          'next_after_seq': nextAfterSeq,
+          'oldest_seq': 1,
+          'latest_seq': nextAfterSeq,
+          'has_more': false,
+        }),
+      );
+      await request.response.close();
+      return;
+    }
     final body =
         jsonDecode(await utf8.decoder.bind(request).join())
             as Map<String, dynamic>;
     if (body['stream'] == true) {
       streamRequestCount++;
+      streamedChatHeaders.add({
+        'authorization': request.headers.value('authorization'),
+        'conversation': request.headers.value('x-kelivo-conversation-id'),
+        'assistant': request.headers.value('x-kelivo-assistant-id'),
+      });
       request.response.statusCode = HttpStatus.ok;
       request.response.headers.contentType = ContentType(
         'text',
@@ -117,12 +168,14 @@ void main() {
     service = ChatService(existingRepository: repository);
     await service.init();
     streamRequestCount = 0;
+    heartbeatEnabled = false;
+    proactiveEvents.clear();
+    streamedChatHeaders.clear();
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen(handleApiRequest);
   });
 
   tearDown(() async {
-    PathProviderPlatform.instance = previousPathProvider;
     try {
       await server.close(force: true);
     } catch (_) {}
@@ -132,6 +185,9 @@ void main() {
     try {
       await repository.close().timeout(const Duration(seconds: 10));
     } catch (_) {}
+    await ContextLogger.setEnabled(false);
+    await RequestLogger.setEnabled(false);
+    PathProviderPlatform.instance = previousPathProvider;
     if (await directory.exists()) await directory.delete(recursive: true);
   });
 
@@ -197,12 +253,22 @@ void main() {
         ),
       ),
     );
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+    });
     expect(tester.takeException(), isNull);
     return controller!;
   }
 
-  Future<Conversation> openConversation(HomePageController controller) async {
-    final convo = await service.createConversation(title: 'Race test');
+  Future<Conversation> openConversation(
+    HomePageController controller, {
+    String? assistantId,
+  }) async {
+    final convo = await service.createConversation(
+      title: 'Race test',
+      assistantId: assistantId,
+    );
     await controller.chatController.setCurrentConversationAndLoad(convo);
     return convo;
   }
@@ -255,6 +321,81 @@ void main() {
     });
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'Heartbeat lifecycle sync imports once on resume before a normal reply',
+    (tester) async {
+      heartbeatEnabled = true;
+      final controller = await pumpHarness(tester);
+      await tester.runAsync(() async {
+        final convo = await openConversation(
+          controller,
+          assistantId: assistantProvider.currentAssistantId,
+        );
+        await controller.sendMessage(ChatInputData(text: '我先去忙一下'));
+        await waitFor(() => streamRequestCount == 1, 'first stream request');
+        await waitFor(
+          () => !controller.chatController.isConversationLoading(convo.id),
+          'first stream completion',
+        );
+        expect(
+          streamedChatHeaders.single['authorization'],
+          'Bearer race-test-key',
+        );
+        expect(streamedChatHeaders.single['conversation'], convo.id);
+        expect(
+          streamedChatHeaders.single['assistant'],
+          assistantProvider.currentAssistantId,
+        );
+
+        proactiveEvents.add({
+          'event_id': 'resume-event',
+          'seq': 12,
+          'conversation_id': convo.id,
+          'assistant_id': assistantProvider.currentAssistantId,
+          'created_at': '2026-08-23T01:00:00.000Z',
+          'role': 'assistant',
+          'title': '阿言',
+          'body': '想你了，在忙吗？',
+          'source': 'wake',
+          'push_provider': 'bark',
+        });
+        controller.onAppLifecycleStateChanged(AppLifecycleState.paused);
+        controller.onAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await waitFor(
+          () => controller.messages.any(
+            (message) => message.id == 'heartbeat:resume-event',
+          ),
+          'resume proactive event',
+        );
+        expect(
+          (await service.loadMessages(convo.id))
+              .where((message) => message.id == 'heartbeat:resume-event')
+              .single
+              .content,
+          '想你了，在忙吗？',
+        );
+
+        controller.onAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(
+          (await service.loadMessages(
+            convo.id,
+          )).where((message) => message.id == 'heartbeat:resume-event'),
+          hasLength(1),
+        );
+
+        await controller.sendMessage(ChatInputData(text: '刚忙完'));
+        await waitFor(() => streamRequestCount == 2, 'reply stream request');
+        await waitFor(
+          () => !controller.chatController.isConversationLoading(convo.id),
+          'reply stream completion',
+        );
+        expect(streamedChatHeaders.last['conversation'], convo.id);
+      });
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('single-flight cancel hides loading before slow teardown', (
     tester,

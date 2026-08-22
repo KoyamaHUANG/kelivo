@@ -1,7 +1,17 @@
 import 'model_override_payload_parser.dart';
 
 class CustomRequestMerger {
-  static const Set<String> _protectedAssistantHeaders = {'x-conversation-id'};
+  static const Set<String> _protectedAssistantHeaders = {
+    'x-conversation-id',
+    'x-kelivo-conversation-id',
+    'x-kelivo-assistant-id',
+  };
+  // These are client-controlled, capability-gated routing headers. A provider
+  // or model custom-header row must never turn them on for ordinary traffic.
+  static const Set<String> _providerForbiddenHeaders = {
+    'x-kelivo-conversation-id',
+    'x-kelivo-assistant-id',
+  };
 
   static Map<String, String> mergeHeaders({
     Map<String, String> base = const <String, String>{},
@@ -26,9 +36,9 @@ class CustomRequestMerger {
     for (final layer in <Map<String, String>>[
       base,
       ordinaryAssistant,
-      providerAutomatic,
-      provider,
-      model,
+      _withoutProviderForbiddenHeaders(providerAutomatic),
+      _withoutProviderForbiddenHeaders(provider),
+      _withoutProviderForbiddenHeaders(model),
       protected,
     ]) {
       _addHeadersCaseInsensitive(merged, layer);
@@ -65,4 +75,12 @@ class CustomRequestMerger {
       target[entry.key] = entry.value;
     }
   }
+
+  static Map<String, String> _withoutProviderForbiddenHeaders(
+    Map<String, String> headers,
+  ) => <String, String>{
+    for (final entry in headers.entries)
+      if (!_providerForbiddenHeaders.contains(entry.key.toLowerCase()))
+        entry.key: entry.value,
+  };
 }
