@@ -1123,6 +1123,23 @@ class ChatActions {
       }
     }
 
+    // This is the only user-chat send path. The bounded sync runs before the
+    // user row is persisted, so a just-arrived proactive assistant message
+    // naturally precedes the user's reply in both local order and history.
+    Map<String, String>? heartbeatHeaders;
+    try {
+      final preparation = await messageGenerationService
+          .prepareHeartbeatProactiveForUserSend(
+            conversation: conversation,
+            settings: settings,
+            providerId: providerKey,
+            modelId: modelId,
+          );
+      heartbeatHeaders = preparation.headers;
+    } catch (_) {
+      // Proactive sync is opportunistic; ordinary chat must continue.
+    }
+
     final existingContextMessages = await chatController
         .messagesForGenerationContext(
           conversation,
@@ -1235,6 +1252,7 @@ class ChatActions {
         enableReasoning: enableReasoning,
         generateTitleOnFinish: true,
         generationRunId: generationRunId,
+        heartbeatHeaders: heartbeatHeaders,
       );
 
       if (!_activeAssistantMessages.isActive(assistantMessage)) {

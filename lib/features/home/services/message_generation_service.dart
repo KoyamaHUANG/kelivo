@@ -9,6 +9,8 @@ import '../../../core/providers/settings_provider.dart';
 import '../../../core/services/api/chat_api_service.dart';
 import '../../../core/services/chat/chat_service.dart';
 import '../../../core/services/logging/context_logger.dart';
+import '../../../core/services/proactive_sync/heartbeat_proactive_models.dart';
+import '../../../core/services/proactive_sync/heartbeat_proactive_sync_service.dart';
 import '../../../core/utils/multimodal_input_utils.dart';
 import '../../../utils/sandbox_path_resolver.dart';
 import '../../../utils/assistant_regex.dart';
@@ -34,16 +36,31 @@ const String _conversationIdHeaderNameLower = 'x-conversation-id';
 Map<String, String>? buildConversationRequestHeaders({
   required String conversationId,
   Map<String, String>? customHeaders,
+  Map<String, String>? heartbeatHeaders,
 }) {
+  const protected = <String>{
+    _conversationIdHeaderNameLower,
+    'x-kelivo-conversation-id',
+    'x-kelivo-assistant-id',
+  };
   final headers = <String, String>{
     if (customHeaders != null)
       for (final entry in customHeaders.entries)
-        if (entry.key.toLowerCase() != _conversationIdHeaderNameLower)
+        if (!protected.contains(entry.key.toLowerCase()))
           entry.key: entry.value,
   };
   final normalizedConversationId = conversationId.trim();
   if (normalizedConversationId.isNotEmpty) {
     headers[conversationIdHeaderName] = normalizedConversationId;
+  }
+  if (heartbeatHeaders != null) {
+    for (final entry in heartbeatHeaders.entries) {
+      final key = entry.key.toLowerCase();
+      if (key == heartbeatConversationHeaderName.toLowerCase() ||
+          key == heartbeatAssistantHeaderName.toLowerCase()) {
+        headers[entry.key] = entry.value;
+      }
+    }
   }
   return headers.isEmpty ? null : headers;
 }
@@ -81,6 +98,7 @@ class MessageGenerationService {
     required this.generationController,
     required this.streamController,
     required this.contextProvider,
+    this.heartbeatProactiveSyncService,
   });
 
   final ChatService chatService;
@@ -88,6 +106,7 @@ class MessageGenerationService {
   final GenerationController generationController;
   final stream_ctrl.StreamController streamController;
   final BuildContext contextProvider;
+  final HeartbeatProactiveSyncService? heartbeatProactiveSyncService;
 
   // Callbacks for UI updates (set by home_page)
   OnMessagesChanged? onMessagesChanged;
@@ -366,6 +385,27 @@ class MessageGenerationService {
     return (assistantMessage: result.assistantMessage, runId: result.run.id);
   }
 
+  Future<HeartbeatProactiveChatPreparation>
+  prepareHeartbeatProactiveForUserSend({
+    required Conversation conversation,
+    required SettingsProvider settings,
+    required String providerId,
+    required String modelId,
+  }) {
+    final service = heartbeatProactiveSyncService;
+    if (service == null) {
+      return Future<HeartbeatProactiveChatPreparation>.value(
+        HeartbeatProactiveChatPreparation.none,
+      );
+    }
+    return service.prepareForUserChat(
+      conversation: conversation,
+      config: settings.getProviderConfig(providerId),
+      providerId: providerId,
+      modelId: modelId,
+    );
+  }
+
   /// Build structured parts for a persisted user message.
   ///
   /// Text is always present (possibly empty). Attachments follow in the
@@ -468,6 +508,7 @@ class MessageGenerationService {
     required bool enableReasoning,
     required bool generateTitleOnFinish,
     String? generationRunId,
+    Map<String, String>? heartbeatHeaders,
   }) {
     final bool ocrActive =
         settings.ocrEnabled &&
@@ -489,6 +530,7 @@ class MessageGenerationService {
       extraHeaders: buildConversationRequestHeaders(
         conversationId: assistantMessage.conversationId,
         customHeaders: generationController.buildCustomHeaders(assistant),
+        heartbeatHeaders: heartbeatHeaders,
       ),
       extraBody: generationController.buildCustomBody(assistant),
       supportsReasoning: supportsReasoning,

@@ -2391,6 +2391,43 @@ class ChatService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Appends an externally-originated assistant message through the normal
+  /// repository/cache/notifier path without changing conversation.updatedAt.
+  /// The caller supplies a stable message id so retries are idempotent.
+  ///
+  /// Returns false only when the exact message id is already present or the
+  /// target is not a persisted conversation. It deliberately never creates a
+  /// conversation from an external delivery.
+  Future<bool> appendExternalAssistantMessage(ChatMessage message) async {
+    if (!_initialized) await init();
+    if (message.role != 'assistant' ||
+        message.isStreaming ||
+        isTemporaryConversation(message.conversationId)) {
+      return false;
+    }
+    final conversation = _conversationsCache[message.conversationId];
+    if (conversation == null) return false;
+    final order = await _loadMessageOrder(message.conversationId);
+    if (order.contains(message.id)) return false;
+    final persisted = await _repo.appendLinearMessageToConversation(
+      conversation: conversation,
+      message: message,
+      touchUpdatedAt: false,
+    );
+    _conversationsCache[message.conversationId] = persisted;
+    order.add(message.id);
+    _messageCounts[message.conversationId] = order.length;
+    if (_messagesCache.containsKey(message.conversationId) &&
+        !_messagesCache[message.conversationId]!.any(
+          (cached) => cached.id == message.id,
+        )) {
+      _messagesCache[message.conversationId]!.add(message);
+    }
+    _touchMessageCache(message.conversationId);
+    notifyListeners();
+    return true;
+  }
+
   // Conversation-scoped MCP servers selection
   List<String> getConversationMcpServers(String conversationId) {
     if (!_initialized) return const <String>[];

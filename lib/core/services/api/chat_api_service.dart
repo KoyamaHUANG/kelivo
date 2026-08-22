@@ -111,7 +111,17 @@ class ChatApiService {
     return effectiveModelInfo(config, modelId).input.contains(Modality.image);
   }
 
-  static http.Client _clientFor(ProviderConfig cfg, CancelToken cancelToken) {
+  /// Creates the same provider-scoped HTTP transport used for normal chat.
+  ///
+  /// Small read-only extension APIs (such as Heartbeat proactive sync) use
+  /// this instead of constructing a bare client, preserving per-provider
+  /// proxy behavior and the app's network conventions.
+  static http.Client createProviderHttpClient(
+    ProviderConfig cfg, {
+    CancelToken? cancelToken,
+    Duration? timeout,
+  }) {
+    final resolvedCancelToken = cancelToken ?? CancelToken();
     final enabled = cfg.proxyEnabled == true;
     final host = (cfg.proxyHost ?? '').trim();
     final portStr = (cfg.proxyPort ?? '').trim();
@@ -128,10 +138,11 @@ class ChatApiService {
           username: user.isEmpty ? null : user,
           password: pass.isEmpty ? null : pass,
         ),
-        cancelToken: cancelToken,
+        cancelToken: resolvedCancelToken,
+        timeout: timeout,
       );
     }
-    return DioHttpClient(cancelToken: cancelToken);
+    return DioHttpClient(cancelToken: resolvedCancelToken, timeout: timeout);
   }
 
   static Stream<StreamChunk> sendMessageStream({
@@ -181,7 +192,7 @@ class ChatApiService {
     final safeUserImagePaths = stripUnsupportedImageInputs
         ? const <String>[]
         : userImagePaths;
-    final client = _clientFor(config, cancelToken);
+    final client = createProviderHttpClient(config, cancelToken: cancelToken);
 
     try {
       if (kind == ProviderKind.openai) {

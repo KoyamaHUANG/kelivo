@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:Kelivo/features/home/services/message_generation_service.dart';
+import 'package:Kelivo/core/services/proactive_sync/heartbeat_proactive_models.dart';
 
 void main() {
   group('conversation request headers', () {
@@ -45,5 +46,30 @@ void main() {
 
       expect(headers, {'X-Gateway': 'EchoPort'});
     });
+
+    test(
+      'protects confirmed Heartbeat headers from assistant custom values',
+      () {
+        final headers = buildConversationRequestHeaders(
+          conversationId: 'conversation-123',
+          customHeaders: const {
+            'X-Kelivo-Conversation-Id': 'stale',
+            'x-kelivo-assistant-id': 'stale-assistant',
+            'X-Other': 'kept',
+          },
+          heartbeatHeaders: const {
+            heartbeatConversationHeaderName: 'conversation-123',
+            heartbeatAssistantHeaderName: 'ayan',
+          },
+        );
+
+        expect(headers, <String, String>{
+          'X-Other': 'kept',
+          conversationIdHeaderName: 'conversation-123',
+          heartbeatConversationHeaderName: 'conversation-123',
+          heartbeatAssistantHeaderName: 'ayan',
+        });
+      },
+    );
   });
 }
