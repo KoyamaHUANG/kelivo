@@ -19,6 +19,8 @@ import '../../../core/providers/quick_phrase_provider.dart';
 import '../../../core/providers/instruction_injection_provider.dart';
 import '../../../core/providers/memory_provider.dart';
 import '../../../core/services/chat/chat_service.dart';
+import '../../../core/services/proactive_sync/heartbeat_proactive_store.dart';
+import '../../../core/services/proactive_sync/heartbeat_proactive_sync_service.dart';
 import '../../../core/services/tts/tts_text_selection.dart';
 import '../../../core/services/haptics.dart';
 import '../../../core/services/notification_service.dart';
@@ -147,6 +149,7 @@ class HomePageController extends ChangeNotifier {
   late GenerationController _generationController;
   late MessageBuilderService _messageBuilderService;
   late MessageGenerationService _messageGenerationService;
+  late HeartbeatProactiveSyncService _heartbeatProactiveSyncService;
   late HomeViewModel _viewModel;
   late OcrService _ocrService;
   late TranslationService _translationService;
@@ -411,6 +414,13 @@ class HomePageController extends ChangeNotifier {
   }
 
   void _initializeServices() {
+    _heartbeatProactiveSyncService = HeartbeatProactiveSyncService(
+      chatService: _chatService,
+      store: HeartbeatProactiveStore(
+        preferences: _context.read<SettingsProvider>().businessPreferences,
+      ),
+      onMessagesPersisted: _publishHeartbeatProactiveMessages,
+    );
     _ocrService = OcrService(
       resolveContentHashes: (paths) =>
           _chatService.resolveImageContentHashes(paths),
@@ -468,7 +478,49 @@ class HomePageController extends ChangeNotifier {
       generationController: _generationController,
       streamController: _streamController,
       contextProvider: _context,
+      heartbeatProactiveSyncService: _heartbeatProactiveSyncService,
     );
+  }
+
+  /// Publish only the active conversation into its bounded timeline. Other
+  /// conversations are saved normally without changing what the user views.
+  Future<void> _publishHeartbeatProactiveMessages(
+    List<ChatMessage> messages,
+  ) async {
+    final currentId = currentConversation?.id;
+    if (currentId == null) return;
+    final currentMessages = messages
+        .where((message) => message.conversationId == currentId)
+        .toList(growable: false);
+    if (currentMessages.isEmpty) return;
+    if (await _chatController.appendPersistedTailMessages(currentMessages)) {
+      notifyListeners();
+    }
+  }
+
+  Future<void> _syncHeartbeatKnownBindings() async {
+    if (!_context.mounted) return;
+    try {
+      await _heartbeatProactiveSyncService.syncKnownBindings(
+        settings: _context.read<SettingsProvider>(),
+        currentConversationId: currentConversation?.id,
+      );
+    } catch (_) {
+      // Proactive delivery is optional and always silent on failure.
+    }
+  }
+
+  Future<void> _syncHeartbeatCurrentConversation() async {
+    final conversationId = currentConversation?.id;
+    if (conversationId == null || !_context.mounted) return;
+    try {
+      await _heartbeatProactiveSyncService.syncConversation(
+        conversationId: conversationId,
+        settings: _context.read<SettingsProvider>(),
+      );
+    } catch (_) {
+      // Proactive delivery is optional and always silent on failure.
+    }
   }
 
   void _initializeViewModel() {
@@ -822,6 +874,7 @@ class HomePageController extends ChangeNotifier {
       if (_chatInitialized) {
         unawaited(_openPendingNotificationConversation());
       }
+      unawaited(_syncHeartbeatKnownBindings());
     }
   }
 
@@ -1084,6 +1137,7 @@ class HomePageController extends ChangeNotifier {
       if (!isDesktopPlatform) {
         unawaited(_forwardConvoFade());
       }
+      unawaited(_syncHeartbeatCurrentConversation());
       return;
     }
     // Invalidate in-flight select-all / toggle / invert for the prior chat.
@@ -1151,6 +1205,7 @@ class HomePageController extends ChangeNotifier {
         _inputFocus.requestFocus();
       });
     }
+    unawaited(_syncHeartbeatCurrentConversation());
   }
 
   Future<void> _reverseConvoFade() async {
@@ -2690,6 +2745,7 @@ class HomePageController extends ChangeNotifier {
     _appInForeground = (state == AppLifecycleState.resumed);
     if (state == AppLifecycleState.resumed) {
       ScreenWakelock.reassert();
+      unawaited(_syncHeartbeatKnownBindings());
     }
   }
 

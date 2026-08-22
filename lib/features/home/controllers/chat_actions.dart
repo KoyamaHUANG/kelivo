@@ -1215,6 +1215,23 @@ class ChatActions {
       return ChatActionResult.error('audio_attachment_unsupported');
     }
 
+    // This is the only user-chat send path. The bounded sync runs before the
+    // user row is persisted, so a just-arrived proactive assistant message
+    // naturally precedes the user's reply in both local order and history.
+    Map<String, String>? heartbeatHeaders;
+    try {
+      final preparation = await messageGenerationService
+          .prepareHeartbeatProactiveForUserSend(
+            conversation: conversation,
+            settings: settings,
+            providerId: providerKey,
+            modelId: modelId,
+          );
+      heartbeatHeaders = preparation.headers;
+    } catch (_) {
+      // Proactive sync is opportunistic; ordinary chat must continue.
+    }
+
     late final ChatMessage userMessage;
     late final ChatMessage assistantMessage;
     String? generationRunId;
@@ -1269,6 +1286,7 @@ class ChatActions {
         generationRunId: generationRunId,
         approvalService: approvalService,
         askUserService: askUserService,
+        heartbeatHeaders: heartbeatHeaders,
       ),
     );
     return ChatActionResult.success(assistantMessage);
@@ -1287,6 +1305,7 @@ class ChatActions {
     required String? generationRunId,
     required ToolApprovalService? approvalService,
     required AskUserInteractionService? askUserService,
+    required Map<String, String>? heartbeatHeaders,
   }) async {
     // Nothing awaits this future, so every failure has to be caught here.
     try {
@@ -1373,6 +1392,7 @@ class ChatActions {
         enableReasoning: enableReasoning,
         generateTitleOnFinish: true,
         generationRunId: generationRunId,
+        heartbeatHeaders: heartbeatHeaders,
       );
 
       if (!_activeAssistantMessages.isActive(assistantMessage)) {
