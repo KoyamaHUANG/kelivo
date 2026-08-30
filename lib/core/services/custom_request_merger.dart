@@ -5,13 +5,22 @@ class CustomRequestMerger {
     'x-conversation-id',
     'x-kelivo-conversation-id',
     'x-kelivo-assistant-id',
+    'x-kelivo-archive-protocol',
+    'x-kelivo-request-id',
+    'x-kelivo-user-message-id',
+    'x-kelivo-parent-request-id',
   };
   // These are client-controlled, capability-gated routing headers. A provider
   // or model custom-header row must never turn them on for ordinary traffic.
   static const Set<String> _providerForbiddenHeaders = {
     'x-kelivo-conversation-id',
     'x-kelivo-assistant-id',
+    'x-kelivo-archive-protocol',
+    'x-kelivo-request-id',
+    'x-kelivo-user-message-id',
+    'x-kelivo-parent-request-id',
   };
+  static const Set<String> _reservedBodyKeys = {'_kelivo_archive'};
 
   static Map<String, String> mergeHeaders({
     Map<String, String> base = const <String, String>{},
@@ -54,14 +63,19 @@ class CustomRequestMerger {
     final merged = <String, dynamic>{};
     if (assistant != null) {
       for (final entry in assistant.entries) {
+        if (_reservedBodyKeys.contains(entry.key)) continue;
         final value = entry.value;
         merged[entry.key] = value is String
             ? ModelOverridePayloadParser.parseOverrideValue(value)
             : value;
       }
     }
-    merged.addAll(ModelOverridePayloadParser.customBodyFromRows(providerRows));
-    merged.addAll(model);
+    merged.addAll(
+      _withoutReservedBodyKeys(
+        ModelOverridePayloadParser.customBodyFromRows(providerRows),
+      ),
+    );
+    merged.addAll(_withoutReservedBodyKeys(model));
     return merged;
   }
 
@@ -82,5 +96,12 @@ class CustomRequestMerger {
     for (final entry in headers.entries)
       if (!_providerForbiddenHeaders.contains(entry.key.toLowerCase()))
         entry.key: entry.value,
+  };
+
+  static Map<String, dynamic> _withoutReservedBodyKeys(
+    Map<String, dynamic> body,
+  ) => <String, dynamic>{
+    for (final entry in body.entries)
+      if (!_reservedBodyKeys.contains(entry.key)) entry.key: entry.value,
   };
 }

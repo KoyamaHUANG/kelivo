@@ -464,6 +464,52 @@ void main() {
   });
 
   group('durable sync semantics', () {
+    group('archive identity capability', () {
+      test(
+        'new non-persisted conversations get Protocol 1 headers without a proactive binding',
+        () async {
+          final draft = await chatService.createDraftConversation(
+            title: 'first send',
+            assistantId: 'ayan',
+          );
+          final api = _FakeApi(
+            (call) => HeartbeatProactiveHttpResponse(
+              statusCode: 200,
+              body: <String, Object?>{
+                'object': 'proactive_event_list',
+                'conversation_id': call.conversationId,
+                'data': const <Object?>[],
+                'next_after_seq': 0,
+                'has_more': false,
+                'capabilities': const <String, Object?>{
+                  'archive_identity_protocol': 1,
+                },
+              },
+            ),
+          );
+          final sync = HeartbeatProactiveSyncService(
+            chatService: chatService,
+            store: store,
+            api: api,
+          );
+
+          final preparation = await sync.prepareForUserChat(
+            conversation: draft,
+            config: _config(),
+            providerId: 'heartbeat-provider',
+            modelId: 'model-A',
+          );
+
+          expect(preparation.supportsArchiveIdentityProtocol, isTrue);
+          expect(preparation.headers, <String, String>{
+            heartbeatConversationHeaderName: draft.id,
+            heartbeatAssistantHeaderName: 'ayan',
+          });
+          expect(await store.getBinding(draft.id), isNull);
+        },
+      );
+    });
+
     test(
       'pre-send sync publishes proactive assistant before the user reply',
       () async {

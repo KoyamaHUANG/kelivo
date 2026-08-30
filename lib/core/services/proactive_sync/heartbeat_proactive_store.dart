@@ -14,6 +14,8 @@ class HeartbeatProactiveStore {
 
   static const _bindingsKey = 'heartbeat_proactive_bindings_v1';
   static const _capabilityPrefix = 'heartbeat_proactive_capability_v1:';
+  static const _archiveCapabilityPrefix =
+      'heartbeat_archive_identity_capability_v1:';
   static const _cursorPrefix = 'heartbeat_proactive_cursor_v1:';
 
   final BusinessPreferences preferences;
@@ -25,6 +27,9 @@ class HeartbeatProactiveStore {
 
   String _capabilityKey(String providerIdentity) =>
       '$_capabilityPrefix${_safeKeyPart(providerIdentity)}';
+
+  String _archiveCapabilityKey(String providerIdentity) =>
+      '$_archiveCapabilityPrefix${_safeKeyPart(providerIdentity)}';
 
   String _cursorKey(HeartbeatProactiveBinding binding) =>
       '$_cursorPrefix${_safeKeyPart(binding.providerIdentity)}:${_safeKeyPart(binding.conversationId)}';
@@ -42,6 +47,31 @@ class HeartbeatProactiveStore {
   Future<void> clearPositiveCapability(String providerIdentity) async {
     await _ensureLoaded();
     await preferences.remove(_capabilityKey(providerIdentity));
+  }
+
+  /// A separate cache from proactive capability. Zero is a completed probe
+  /// against an old server; 1 is the Protocol 1 capability.
+  Future<int?> getArchiveIdentityProtocolVersion(
+    String providerIdentity,
+  ) async {
+    await _ensureLoaded();
+    final version = preferences.getInt(_archiveCapabilityKey(providerIdentity));
+    return version == null || version < 0 ? null : version;
+  }
+
+  Future<void> setArchiveIdentityProtocolVersion(
+    String providerIdentity,
+    int version,
+  ) async {
+    await _ensureLoaded();
+    await preferences.setInt(_archiveCapabilityKey(providerIdentity), version);
+  }
+
+  Future<void> clearArchiveIdentityProtocolVersion(
+    String providerIdentity,
+  ) async {
+    await _ensureLoaded();
+    await preferences.remove(_archiveCapabilityKey(providerIdentity));
   }
 
   Future<void> upsertBinding(HeartbeatProactiveBinding binding) async {
