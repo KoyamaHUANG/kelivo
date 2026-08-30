@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 
 import '../../../providers/settings_provider.dart';
+import '../../archive_identity/kelivo_archive_identity.dart';
 import '../chat_api_helpers.dart';
 import '../stream/stream_chunk.dart';
 
@@ -22,6 +23,7 @@ Stream<StreamChunk> sendOpenAIChatCompletionsStream(
   ToolCallHandler? onToolCall,
   Map<String, String>? extraHeaders,
   Map<String, dynamic>? extraBody,
+  KelivoArchiveIdentity? archiveIdentity,
   bool stream = true,
   bool builtInSearchOnly = false,
   bool skipImageParsing = false,
@@ -41,6 +43,7 @@ Stream<StreamChunk> sendOpenAIChatCompletionsStream(
     onToolCall: onToolCall,
     extraHeaders: extraHeaders,
     extraBody: extraBody,
+    archiveIdentity: archiveIdentity,
     stream: stream,
     builtInSearchOnly: builtInSearchOnly,
     skipImageParsing: skipImageParsing,

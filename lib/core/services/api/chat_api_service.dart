@@ -8,6 +8,7 @@ import '../network/dio_http_client.dart';
 import '../../../utils/unicode_sanitizer.dart';
 import '../logging/context_log_models.dart';
 import '../../utils/multimodal_input_utils.dart';
+import '../archive_identity/kelivo_archive_identity.dart';
 import 'generation/text_generation_result.dart';
 import 'stream/stream_chunk.dart';
 import 'stream/stream_chunk_handler.dart';
@@ -159,6 +160,7 @@ class ChatApiService {
     ToolCallHandler? onToolCall,
     Map<String, String>? extraHeaders,
     Map<String, dynamic>? extraBody,
+    KelivoArchiveIdentity? archiveIdentity,
     bool stream = true,
     String? requestId,
     bool allowImagesApiRouting = true,
@@ -254,6 +256,7 @@ class ChatApiService {
             onToolCall: onToolCall,
             extraHeaders: extraHeaders,
             extraBody: extraBody,
+            archiveIdentity: archiveIdentity,
             stream: stream,
             builtInSearchOnly: builtInSearchOnly,
             skipImageParsing: skipImageParsing,
@@ -362,6 +365,7 @@ class ChatApiService {
     ToolCallHandler? onToolCall,
     Map<String, String>? extraHeaders,
     Map<String, dynamic>? extraBody,
+    KelivoArchiveIdentity? archiveIdentity,
     String? requestId,
     bool allowImagesApiRouting = true,
     bool ocrActive = false,
@@ -382,6 +386,7 @@ class ChatApiService {
       onToolCall: onToolCall,
       extraHeaders: extraHeaders,
       extraBody: extraBody,
+      archiveIdentity: archiveIdentity,
       stream: false,
       requestId: requestId,
       allowImagesApiRouting: allowImagesApiRouting,

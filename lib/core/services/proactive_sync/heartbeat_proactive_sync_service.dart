@@ -32,10 +32,35 @@ class HeartbeatProactiveSyncResult {
 
 /// Confirmation returned to the one real user-chat route. Nothing in this
 /// service is used by title, summary, translation, OCR, or other utilities.
+class HeartbeatGatewayCapabilities {
+  const HeartbeatGatewayCapabilities({
+    required this.proactiveSync,
+    required this.archiveIdentityProtocolVersion,
+  });
+
+  final bool proactiveSync;
+  final int archiveIdentityProtocolVersion;
+
+  bool get supportsArchiveIdentityProtocol =>
+      archiveIdentityProtocolVersion == 1;
+
+  static const none = HeartbeatGatewayCapabilities(
+    proactiveSync: false,
+    archiveIdentityProtocolVersion: 0,
+  );
+}
+
 class HeartbeatProactiveChatPreparation {
-  const HeartbeatProactiveChatPreparation(this.headers);
+  const HeartbeatProactiveChatPreparation(
+    this.headers, {
+    this.archiveIdentityProtocolVersion = 0,
+  });
 
   final Map<String, String>? headers;
+  final int archiveIdentityProtocolVersion;
+
+  bool get supportsArchiveIdentityProtocol =>
+      archiveIdentityProtocolVersion == 1;
 
   static const none = HeartbeatProactiveChatPreparation(null);
 }
@@ -67,9 +92,10 @@ class HeartbeatProactiveSyncService {
   final Map<String, Future<HeartbeatProactiveSyncResult>> _inFlight =
       <String, Future<HeartbeatProactiveSyncResult>>{};
 
-  /// Probes only openai-compatible providers, and only persists a positive
-  /// answer. Negative answers are intentionally session-scoped and short.
-  Future<bool> supportsProactiveSync({
+  /// Probes the existing capability endpoint once, but persists proactive and
+  /// archive capabilities separately. A proactive endpoint alone never grants
+  /// permission to send a private archive envelope.
+  Future<HeartbeatGatewayCapabilities> gatewayCapabilities({
     required ProviderConfig config,
     required String modelId,
   }) async {
@@ -77,16 +103,32 @@ class HeartbeatProactiveSyncService {
       config.id,
       explicitType: config.providerType,
     );
-    if (kind != ProviderKind.openai) return false;
+    if (kind != ProviderKind.openai || config.useResponseApi == true) {
+      return HeartbeatGatewayCapabilities.none;
+    }
     final normalizedBaseUrl = normalizeHeartbeatBaseUrl(config.baseUrl);
     if (normalizedBaseUrl.isEmpty ||
         buildHeartbeatProactiveEventsEndpoint(config) == null) {
-      return false;
+      return HeartbeatGatewayCapabilities.none;
     }
     final identity = heartbeatProviderIdentity(config.id, normalizedBaseUrl);
-    if (await store.hasPositiveCapability(identity)) return true;
+    final proactiveCached = await store.hasPositiveCapability(identity);
+    final archiveCached = await store.getArchiveIdentityProtocolVersion(
+      identity,
+    );
+    if (proactiveCached && archiveCached != null) {
+      return HeartbeatGatewayCapabilities(
+        proactiveSync: true,
+        archiveIdentityProtocolVersion: archiveCached,
+      );
+    }
     final negativeUntil = _negativeUntil[identity];
-    if (negativeUntil != null && negativeUntil.isAfter(_now())) return false;
+    if (negativeUntil != null && negativeUntil.isAfter(_now())) {
+      return HeartbeatGatewayCapabilities(
+        proactiveSync: proactiveCached,
+        archiveIdentityProtocolVersion: archiveCached ?? 0,
+      );
+    }
 
     try {
       final response = await _api.fetchEvents(
@@ -97,44 +139,94 @@ class HeartbeatProactiveSyncService {
         limit: 1,
         timeout: capabilityTimeout,
       );
+      final body = response.body;
       final supported =
           response.statusCode == 200 &&
-          response.body is Map &&
-          (response.body as Map)['object'] == 'proactive_event_list';
-      if (supported) {
-        await store.setPositiveCapability(identity);
-        _negativeUntil.remove(identity);
-        _log('heartbeat_capability=true');
-        return true;
+          body is Map &&
+          body['object'] == 'proactive_event_list';
+      if (!supported) {
+        _negativeUntil[identity] = _now().add(negativeCapabilityTtl);
+        _log('heartbeat_capability=false status=${response.statusCode}');
+        return HeartbeatGatewayCapabilities(
+          proactiveSync: proactiveCached,
+          archiveIdentityProtocolVersion: archiveCached ?? 0,
+        );
       }
-      _negativeUntil[identity] = _now().add(negativeCapabilityTtl);
-      _log('heartbeat_capability=false status=${response.statusCode}');
-      return false;
+      final capabilities = body['capabilities'];
+      final archiveVersion =
+          capabilities is Map && capabilities['archive_identity_protocol'] == 1
+          ? 1
+          : 0;
+      await store.setPositiveCapability(identity);
+      await store.setArchiveIdentityProtocolVersion(identity, archiveVersion);
+      _negativeUntil.remove(identity);
+      _log('heartbeat_capability=true archive_protocol=$archiveVersion');
+      return HeartbeatGatewayCapabilities(
+        proactiveSync: true,
+        archiveIdentityProtocolVersion: archiveVersion,
+      );
     } catch (_) {
       _negativeUntil[identity] = _now().add(negativeCapabilityTtl);
       _log('heartbeat_capability=false network_error');
-      return false;
+      return HeartbeatGatewayCapabilities(
+        proactiveSync: proactiveCached,
+        archiveIdentityProtocolVersion: archiveCached ?? 0,
+      );
     }
   }
 
-  /// Runs immediately before persisting a real user message. It first binds
-  /// the conversation after a confirmed capability probe, then waits only a
-  /// short bounded interval for earlier proactive assistant messages.
+  Future<bool> supportsProactiveSync({
+    required ProviderConfig config,
+    required String modelId,
+  }) async => (await gatewayCapabilities(
+    config: config,
+    modelId: modelId,
+  )).proactiveSync;
+
+  /// Runs immediately before a real user send. Capability probing is valid for
+  /// a newly-created draft conversation because its id is already stable. Only
+  /// proactive binding/pull remains restricted to persisted conversations.
   Future<HeartbeatProactiveChatPreparation> prepareForUserChat({
     required Conversation conversation,
     required ProviderConfig config,
     required String providerId,
     required String modelId,
   }) async {
-    if (!_isPersistentExistingConversation(conversation.id)) {
-      return HeartbeatProactiveChatPreparation.none;
-    }
     final started = _now();
-    final supported = await supportsProactiveSync(
+    final capabilities = await gatewayCapabilities(
       config: config,
       modelId: modelId,
     );
-    if (!supported) return HeartbeatProactiveChatPreparation.none;
+    if (!capabilities.proactiveSync &&
+        !capabilities.supportsArchiveIdentityProtocol) {
+      return HeartbeatProactiveChatPreparation.none;
+    }
+
+    final headers = <String, String>{
+      heartbeatConversationHeaderName: conversation.id,
+      if (_cleanOptional(conversation.assistantId) case final assistantId?)
+        heartbeatAssistantHeaderName: assistantId,
+    };
+    if (!_isPersistentExistingConversation(conversation.id)) {
+      if (!capabilities.supportsArchiveIdentityProtocol) {
+        return HeartbeatProactiveChatPreparation.none;
+      }
+      return HeartbeatProactiveChatPreparation(
+        headers,
+        archiveIdentityProtocolVersion:
+            capabilities.archiveIdentityProtocolVersion,
+      );
+    }
+    if (!capabilities.proactiveSync) {
+      if (!capabilities.supportsArchiveIdentityProtocol) {
+        return HeartbeatProactiveChatPreparation.none;
+      }
+      return HeartbeatProactiveChatPreparation(
+        headers,
+        archiveIdentityProtocolVersion:
+            capabilities.archiveIdentityProtocolVersion,
+      );
+    }
 
     final binding = HeartbeatProactiveBinding(
       conversationId: conversation.id,
@@ -152,22 +244,17 @@ class HeartbeatProactiveSyncService {
       try {
         await syncBinding(binding, config: config).timeout(remaining);
       } catch (_) {
-        // The in-flight sync is allowed to finish later. It must never stop
-        // normal chat when Railway or the local network is unavailable.
         _log('pre_send_sync_timeout_or_error');
       }
     }
-    // A formerly-supported endpoint may have been replaced in place. If the
-    // just-completed sync observed a definitive incompatible response, it
-    // cleared the positive cache; do not send routing headers in that case.
     if (!await supportsProactiveSync(config: config, modelId: modelId)) {
       return HeartbeatProactiveChatPreparation.none;
     }
-    return HeartbeatProactiveChatPreparation(<String, String>{
-      heartbeatConversationHeaderName: conversation.id,
-      if (_cleanOptional(conversation.assistantId) case final assistantId?)
-        heartbeatAssistantHeaderName: assistantId,
-    });
+    return HeartbeatProactiveChatPreparation(
+      headers,
+      archiveIdentityProtocolVersion:
+          capabilities.archiveIdentityProtocolVersion,
+    );
   }
 
   Future<HeartbeatProactiveSyncResult> syncConversation({
@@ -390,7 +477,9 @@ class HeartbeatProactiveSyncService {
   bool _isPersistentExistingConversation(String conversationId) =>
       conversationId.trim().isNotEmpty &&
       !chatService.isTemporaryConversation(conversationId) &&
-      chatService.getConversation(conversationId) != null;
+      chatService.getAllConversations().any(
+        (item) => item.id == conversationId,
+      );
 
   static String? _cleanOptional(String? value) {
     final cleaned = (value ?? '').trim();

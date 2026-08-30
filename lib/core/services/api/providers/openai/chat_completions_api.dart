@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import '../../../../models/token_usage.dart';
 import '../../../../providers/settings_provider.dart';
 import '../../../../utils/multimodal_input_utils.dart';
+import '../../../archive_identity/kelivo_archive_identity.dart';
 import '../../../../../utils/sandbox_path_resolver.dart';
 import '../../chat_api_helpers.dart';
 import '../../generation/tool_loop_runner.dart';
@@ -19,6 +20,14 @@ import 'chat_completions_decoder.dart';
 import 'openai_tool_transcript.dart';
 import 'reasoning_details_replay.dart';
 import 'openai_vendor_compat.dart';
+
+Map<String, String>? _withArchiveHeaders(
+  Map<String, String>? existing,
+  Map<String, String>? archive,
+) {
+  if (archive == null || archive.isEmpty) return existing;
+  return <String, String>{...?existing, ...archive};
+}
 
 Map<String, dynamic> copyChatCompletionMessage(Map<String, dynamic> m) {
   final role = (m['role'] ?? 'user').toString();
@@ -740,6 +749,7 @@ Stream<StreamChunk> runOpenAIChatCompletionsToolFollowUps({
   required List<Map<String, dynamic>>? tools,
   required Map<String, dynamic> extraBodyCfg,
   required Map<String, String>? extraHeaders,
+  KelivoArchiveIdentity? archiveIdentity,
   required bool wantsImageOutput,
   required bool needsReasoningEcho,
   required bool reasoningDetailsAllowSnapshots,
@@ -839,6 +849,7 @@ Stream<StreamChunk> runOpenAIChatCompletionsToolFollowUps({
         isReasoning: isReasoning,
         thinkingBudget: thinkingBudget,
       );
+      archiveIdentity?.applyContinuationChatCompletionsBody(body2);
       final req2 = http.Request('POST', url);
       req2.headers.addAll(
         customHeaders(
@@ -849,7 +860,10 @@ Stream<StreamChunk> runOpenAIChatCompletionsToolFollowUps({
             'Content-Type': 'application/json',
             'Accept': 'text/event-stream',
           },
-          assistantHeaders: extraHeaders,
+          assistantHeaders: _withArchiveHeaders(
+            extraHeaders,
+            archiveIdentity?.continuationHeaders(),
+          ),
         ),
       );
       req2.body = jsonEncode(body2);
@@ -927,6 +941,7 @@ Stream<StreamChunk> runOpenAIChatCompletionsNonStreamToolFollowUps({
   required bool isClaudeUpstream,
   required bool needsReasoningEcho,
   required Map<String, String>? extraHeaders,
+  KelivoArchiveIdentity? archiveIdentity,
   required TokenUsage? initialUsage,
 }) async* {
   var usage = initialUsage;
@@ -957,19 +972,6 @@ Stream<StreamChunk> runOpenAIChatCompletionsNonStreamToolFollowUps({
       ];
     },
     sendFollowUp: () async* {
-      final req = http.Request('POST', url);
-      req.headers.addAll(
-        customHeaders(
-          config,
-          modelId,
-          baseHeaders: <String, String>{
-            'Authorization': 'Bearer ${apiKeyForRequest(config, modelId)}',
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-          },
-          assistantHeaders: extraHeaders,
-        ),
-      );
       final reqBody = Map<String, dynamic>.from(requestBody);
       reqBody['messages'] = await buildOpenAIChatCompletionMessages(
         currentMessages,
@@ -984,6 +986,23 @@ Stream<StreamChunk> runOpenAIChatCompletionsNonStreamToolFollowUps({
         skipImageParsing: skipImageParsing,
       );
       reqBody.remove('stream');
+      archiveIdentity?.applyContinuationChatCompletionsBody(reqBody);
+      final req = http.Request('POST', url);
+      req.headers.addAll(
+        customHeaders(
+          config,
+          modelId,
+          baseHeaders: <String, String>{
+            'Authorization': 'Bearer ${apiKeyForRequest(config, modelId)}',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          assistantHeaders: _withArchiveHeaders(
+            extraHeaders,
+            archiveIdentity?.continuationHeaders(),
+          ),
+        ),
+      );
       req.body = jsonEncode(reqBody);
       final resp2 = await client.send(req);
       if (resp2.statusCode < 200 || resp2.statusCode >= 300) {

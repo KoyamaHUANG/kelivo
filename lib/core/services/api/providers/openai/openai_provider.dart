@@ -8,6 +8,7 @@ import '../../../../models/token_usage.dart';
 import '../../../../providers/model_provider.dart';
 import '../../../../providers/settings_provider.dart';
 import '../../../../utils/multimodal_input_utils.dart';
+import '../../../archive_identity/kelivo_archive_identity.dart';
 import '../../../../../utils/sandbox_path_resolver.dart';
 import '../../builtin_tools.dart';
 import '../../chat_api_helpers.dart';
@@ -40,6 +41,14 @@ Uri _openAICompatibleUrl(ProviderConfig config) {
   }
   final path = config.chatPath ?? '/chat/completions';
   return Uri.parse('$rawBase$path');
+}
+
+Map<String, String>? _withArchiveHeaders(
+  Map<String, String>? existing,
+  Map<String, String>? archive,
+) {
+  if (archive == null || archive.isEmpty) return existing;
+  return <String, String>{...?existing, ...archive};
 }
 
 /// Accumulates streamed `reasoning_details` entries.
@@ -109,6 +118,7 @@ Stream<StreamChunk> sendOpenAIStream(
   ToolCallHandler? onToolCall,
   Map<String, String>? extraHeaders,
   Map<String, dynamic>? extraBody,
+  KelivoArchiveIdentity? archiveIdentity,
   bool stream = true,
   bool builtInSearchOnly = false,
   bool skipImageParsing = false,
@@ -603,17 +613,6 @@ Stream<StreamChunk> sendOpenAIStream(
   }
 
   final request = http.Request('POST', url);
-  final headers = customHeaders(
-    config,
-    modelId,
-    baseHeaders: <String, String>{
-      'Authorization': 'Bearer ${apiKeyForRequest(config, modelId)}',
-      'Content-Type': 'application/json',
-      'Accept': stream ? 'text/event-stream' : 'application/json',
-    },
-    assistantHeaders: extraHeaders,
-  );
-  request.headers.addAll(headers);
   maybeAddStreamingUsageOptions(
     body,
     stream: stream,
@@ -658,6 +657,24 @@ Stream<StreamChunk> sendOpenAIStream(
     upstreamModelId: upstreamModelId,
     isReasoning: isReasoning,
     thinkingBudget: thinkingBudget,
+  );
+  final archiveProtocolActive =
+      config.useResponseApi != true &&
+      (archiveIdentity?.applyInitialChatCompletionsBody(body) ?? false);
+  request.headers.addAll(
+    customHeaders(
+      config,
+      modelId,
+      baseHeaders: <String, String>{
+        'Authorization': 'Bearer ${apiKeyForRequest(config, modelId)}',
+        'Content-Type': 'application/json',
+        'Accept': stream ? 'text/event-stream' : 'application/json',
+      },
+      assistantHeaders: _withArchiveHeaders(
+        extraHeaders,
+        archiveProtocolActive ? archiveIdentity!.initialHeaders() : null,
+      ),
+    ),
   );
   request.body = jsonEncode(body);
 
@@ -793,6 +810,7 @@ Stream<StreamChunk> sendOpenAIStream(
           isClaudeUpstream: isClaudeUpstream,
           needsReasoningEcho: needsReasoningEcho,
           extraHeaders: extraHeaders,
+          archiveIdentity: archiveProtocolActive ? archiveIdentity : null,
           initialUsage: firstUsage,
         );
         return;
@@ -1046,6 +1064,7 @@ Stream<StreamChunk> sendOpenAIStream(
               tools: tools,
               extraBodyCfg: extraBodyCfg,
               extraHeaders: extraHeaders,
+              archiveIdentity: archiveProtocolActive ? archiveIdentity : null,
               wantsImageOutput: wantsImageOutput,
               needsReasoningEcho: needsReasoningEcho,
               reasoningDetailsAllowSnapshots: reasoningDetailsAllowSnapshots,
@@ -1112,6 +1131,7 @@ Stream<StreamChunk> sendOpenAIStream(
           tools: tools,
           extraBodyCfg: extraBodyCfg,
           extraHeaders: extraHeaders,
+          archiveIdentity: archiveProtocolActive ? archiveIdentity : null,
           wantsImageOutput: wantsImageOutput,
           needsReasoningEcho: needsReasoningEcho,
           reasoningDetailsAllowSnapshots: reasoningDetailsAllowSnapshots,
@@ -1165,6 +1185,7 @@ Stream<StreamChunk> sendOpenAIStream(
             tools: tools,
             extraBodyCfg: extraBodyCfg,
             extraHeaders: extraHeaders,
+            archiveIdentity: archiveProtocolActive ? archiveIdentity : null,
             wantsImageOutput: wantsImageOutput,
             needsReasoningEcho: needsReasoningEcho,
             reasoningDetailsAllowSnapshots: reasoningDetailsAllowSnapshots,
