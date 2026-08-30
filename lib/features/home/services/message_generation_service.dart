@@ -7,6 +7,7 @@ import '../../../core/models/message_part.dart';
 import '../../../core/models/conversation.dart';
 import '../../../core/providers/settings_provider.dart';
 import '../../../core/services/api/chat_api_service.dart';
+import '../../../core/services/archive_identity/kelivo_archive_identity.dart';
 import '../../../core/services/chat/chat_service.dart';
 import '../../../core/services/logging/context_logger.dart';
 import '../../../core/services/proactive_sync/heartbeat_proactive_models.dart';
@@ -42,6 +43,10 @@ Map<String, String>? buildConversationRequestHeaders({
     _conversationIdHeaderNameLower,
     'x-kelivo-conversation-id',
     'x-kelivo-assistant-id',
+    'x-kelivo-archive-protocol',
+    'x-kelivo-request-id',
+    'x-kelivo-user-message-id',
+    'x-kelivo-parent-request-id',
   };
   final headers = <String, String>{
     if (customHeaders != null)
@@ -72,6 +77,7 @@ class PreparedGeneration {
   final ToolCallHandler? onToolCall;
   final bool hasBuiltInSearch;
   final List<String> lastUserImagePaths;
+  final KelivoArchiveIdentity? archiveIdentity;
 
   PreparedGeneration({
     required this.apiMessages,
@@ -79,6 +85,7 @@ class PreparedGeneration {
     this.onToolCall,
     required this.hasBuiltInSearch,
     required this.lastUserImagePaths,
+    this.archiveIdentity,
   });
 }
 
@@ -141,6 +148,7 @@ class MessageGenerationService {
     required String modelId,
     ToolApprovalService? approvalService,
     AskUserInteractionService? askUserService,
+    KelivoArchiveIdentity? archiveIdentity,
   }) async {
     final cfg = settings.getProviderConfig(providerKey);
     final kind = ProviderConfig.classify(
@@ -235,6 +243,19 @@ class MessageGenerationService {
         model: modelId,
       );
     }
+    final archiveIdentityForRequest = archiveIdentity == null
+        ? null
+        : (() {
+            final index = apiMessages.indexWhere(
+              (message) =>
+                  (message[MessageBuilderService.internalRevisionIdKey] ?? '')
+                      .toString() ==
+                  archiveIdentity.userMessageId,
+            );
+            return index < 0
+                ? null
+                : archiveIdentity.withUserMessageIndex(index);
+          })();
     messageBuilderService.stripInternalRevisionIds(apiMessages);
 
     // Prepare tools
@@ -266,6 +287,7 @@ class MessageGenerationService {
       onToolCall: onToolCall,
       hasBuiltInSearch: hasBuiltInSearch,
       lastUserImagePaths: lastUserImagePaths,
+      archiveIdentity: archiveIdentityForRequest,
     );
   }
 
@@ -539,6 +561,7 @@ class MessageGenerationService {
       ocrActive: ocrActive,
       generateTitleOnFinish: generateTitleOnFinish,
       generationRunId: generationRunId,
+      archiveIdentity: prepared.archiveIdentity,
     );
   }
 

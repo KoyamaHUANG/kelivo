@@ -10,6 +10,7 @@ import '../../../core/services/api/chat_api_service.dart';
 import '../../../core/services/api/stream/stream_chunk.dart';
 import '../../../core/services/api/stream/stream_chunk_handler.dart';
 import '../../../core/services/chat/chat_service.dart';
+import '../../../core/services/archive_identity/kelivo_archive_identity.dart';
 import '../../chat/widgets/chat_message_widget.dart';
 import '../../../utils/markdown_media_sanitizer.dart';
 import 'streaming_content_notifier.dart';
@@ -1613,6 +1614,7 @@ class GenerationContext {
     this.ocrActive = false,
     this.generateTitleOnFinish = true,
     this.generationRunId,
+    this.archiveIdentity,
   });
 
   final ChatMessage assistantMessage;
@@ -1634,6 +1636,7 @@ class GenerationContext {
   final bool ocrActive;
   final bool generateTitleOnFinish;
   final String? generationRunId;
+  final KelivoArchiveIdentity? archiveIdentity;
 }
 
 /// State object for streaming message generation.
