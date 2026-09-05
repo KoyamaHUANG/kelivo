@@ -83,7 +83,7 @@ final class _AndroidMcpOAuthCallback implements McpOAuthCallback {
 final class _IosMcpOAuthCallback implements McpOAuthCallback {
   _IosMcpOAuthCallback(Uri authorizationServer)
     : redirectUri = Uri(
-        scheme: 'psyche.kelivo',
+        scheme: 'com.koyamahuan.kelivo.heartbeat',
         path:
             '/oauth/callback/${_authorizationServerHash(authorizationServer)}',
       );

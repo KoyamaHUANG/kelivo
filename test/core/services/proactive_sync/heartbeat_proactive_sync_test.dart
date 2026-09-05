@@ -465,6 +465,296 @@ void main() {
 
   group('durable sync semantics', () {
     test(
+      'Archive cache starts absent and is isolated by provider ID and base URL',
+      () async {
+        final first = _config(id: 'first');
+        final firstScope = heartbeatProviderIdentity(
+          first.id,
+          normalizeHeartbeatBaseUrl(first.baseUrl),
+        );
+        expect(
+          await store.getArchiveIdentityProtocolVersion(firstScope),
+          isNull,
+        );
+        final api = _FakeApi(
+          (call) => HeartbeatProactiveHttpResponse(
+            statusCode: 200,
+            body: {
+              'object': 'proactive_event_list',
+              'conversation_id': call.conversationId,
+              'data': <Object?>[],
+              'next_after_seq': 0,
+              'has_more': false,
+              'capabilities': {
+                'archive_identity_protocol':
+                    call.config.id == 'first' &&
+                        call.config.baseUrl == first.baseUrl
+                    ? 1
+                    : 0,
+              },
+            },
+          ),
+        );
+        final sync = HeartbeatProactiveSyncService(
+          chatService: chatService,
+          store: store,
+          api: api,
+        );
+        expect(
+          (await sync.gatewayCapabilities(
+            config: first,
+            modelId: 'model-A',
+          )).supportsArchiveIdentityProtocol,
+          isTrue,
+        );
+        expect(
+          (await sync.gatewayCapabilities(
+            config: _config(id: 'second'),
+            modelId: 'model-A',
+          )).supportsArchiveIdentityProtocol,
+          isFalse,
+        );
+        expect(
+          (await sync.gatewayCapabilities(
+            config: _config(id: 'first', baseUrl: 'https://other.example/v1'),
+            modelId: 'model-A',
+          )).supportsArchiveIdentityProtocol,
+          isFalse,
+        );
+        final restarted = HeartbeatProactiveSyncService(
+          chatService: chatService,
+          store: HeartbeatProactiveStore(preferences: businessPreferences),
+          api: api,
+        );
+        expect(
+          (await restarted.gatewayCapabilities(
+            config: first,
+            modelId: 'model-B',
+          )).supportsArchiveIdentityProtocol,
+          isTrue,
+        );
+        expect(api.calls, hasLength(3));
+        expect(await store.getArchiveIdentityProtocolVersion(firstScope), 1);
+      },
+    );
+
+    test(
+      'Proactive-only cached capability is probed for Archive on upgrade',
+      () async {
+        final config = _config();
+        final scope = heartbeatProviderIdentity(
+          config.id,
+          normalizeHeartbeatBaseUrl(config.baseUrl),
+        );
+        await store.setPositiveCapability(scope);
+        expect(await store.getArchiveIdentityProtocolVersion(scope), isNull);
+        final api = _FakeApi(
+          (call) => HeartbeatProactiveHttpResponse(
+            statusCode: 200,
+            body: {
+              'object': 'proactive_event_list',
+              'capabilities': {'archive_identity_protocol': 1},
+            },
+          ),
+        );
+        final sync = HeartbeatProactiveSyncService(
+          chatService: chatService,
+          store: store,
+          api: api,
+        );
+        expect(
+          (await sync.gatewayCapabilities(
+            config: config,
+            modelId: 'model-A',
+          )).supportsArchiveIdentityProtocol,
+          isTrue,
+        );
+        expect(api.calls, hasLength(1));
+        expect(await store.getArchiveIdentityProtocolVersion(scope), 1);
+      },
+    );
+
+    test(
+      'failed capability probe never writes a completed zero capability',
+      () async {
+        final config = _config();
+        final scope = heartbeatProviderIdentity(
+          config.id,
+          normalizeHeartbeatBaseUrl(config.baseUrl),
+        );
+        final api = _FakeApi(
+          (call) => throw const SocketException('fixture offline'),
+        );
+        final sync = HeartbeatProactiveSyncService(
+          chatService: chatService,
+          store: store,
+          api: api,
+        );
+        expect(
+          (await sync.gatewayCapabilities(
+            config: config,
+            modelId: 'model-A',
+          )).supportsArchiveIdentityProtocol,
+          isFalse,
+        );
+        expect(await store.getArchiveIdentityProtocolVersion(scope), isNull);
+        expect(await store.hasPositiveCapability(scope), isFalse);
+      },
+    );
+
+    test(
+      'Proactive endpoint without Archive advertisement remains Proactive-only',
+      () async {
+        final conversation = await chatService.createConversation(
+          title: 'fixture',
+          assistantId: 'ayan',
+        );
+        final api = _FakeApi(
+          (call) => _page(call.conversationId, [], nextAfterSeq: 0),
+        );
+        final sync = HeartbeatProactiveSyncService(
+          chatService: chatService,
+          store: store,
+          api: api,
+        );
+        final preparation = await sync.prepareForUserChat(
+          conversation: conversation,
+          config: _config(),
+          providerId: 'heartbeat-provider',
+          modelId: 'model-A',
+        );
+        expect(preparation.supportsArchiveIdentityProtocol, isFalse);
+        expect(preparation.headers, {
+          heartbeatConversationHeaderName: conversation.id,
+          heartbeatAssistantHeaderName: 'ayan',
+        });
+        expect(await store.getBinding(conversation.id), isNotNull);
+      },
+    );
+
+    test(
+      'Responses retains baseline Proactive support but never gets Archive identity',
+      () async {
+        final conversation = await chatService.createConversation(
+          title: 'fixture',
+          assistantId: 'ayan',
+        );
+        final config = _config().copyWith(useResponseApi: true);
+        final api = _FakeApi(
+          (call) => HeartbeatProactiveHttpResponse(
+            statusCode: 200,
+            body: {
+              'object': 'proactive_event_list',
+              'conversation_id': call.conversationId,
+              'data': <Object?>[],
+              'next_after_seq': 0,
+              'has_more': false,
+              'capabilities': {'archive_identity_protocol': 1},
+            },
+          ),
+        );
+        final sync = HeartbeatProactiveSyncService(
+          chatService: chatService,
+          store: store,
+          api: api,
+        );
+        final preparation = await sync.prepareForUserChat(
+          conversation: conversation,
+          config: config,
+          providerId: config.id,
+          modelId: 'model-A',
+        );
+        expect(preparation.supportsArchiveIdentityProtocol, isFalse);
+        expect(
+          preparation.headers?[heartbeatConversationHeaderName],
+          conversation.id,
+        );
+        expect(await store.getBinding(conversation.id), isNotNull);
+        expect(
+          (await sync.gatewayCapabilities(
+            config: config.copyWith(useResponseApi: false),
+            modelId: 'model-A',
+          )).supportsArchiveIdentityProtocol,
+          isTrue,
+        );
+      },
+    );
+
+    test(
+      'native providers neither probe nor inherit an OpenAI Archive cache',
+      () async {
+        final config = _config();
+        final scope = heartbeatProviderIdentity(
+          config.id,
+          normalizeHeartbeatBaseUrl(config.baseUrl),
+        );
+        await store.setPositiveCapability(scope);
+        await store.setArchiveIdentityProtocolVersion(scope, 1);
+        final api = _FakeApi((call) => throw StateError('must not probe'));
+        final sync = HeartbeatProactiveSyncService(
+          chatService: chatService,
+          store: store,
+          api: api,
+        );
+        for (final kind in [ProviderKind.claude, ProviderKind.google]) {
+          final capability = await sync.gatewayCapabilities(
+            config: config.copyWith(providerType: kind),
+            modelId: 'model-A',
+          );
+          expect(capability.proactiveSync, isFalse);
+          expect(capability.supportsArchiveIdentityProtocol, isFalse);
+        }
+        expect(api.calls, isEmpty);
+      },
+    );
+
+    group('archive identity capability', () {
+      test(
+        'new non-persisted conversations get Protocol 1 headers without a proactive binding',
+        () async {
+          final draft = await chatService.createDraftConversation(
+            title: 'first send',
+            assistantId: 'ayan',
+          );
+          final api = _FakeApi(
+            (call) => HeartbeatProactiveHttpResponse(
+              statusCode: 200,
+              body: <String, Object?>{
+                'object': 'proactive_event_list',
+                'conversation_id': call.conversationId,
+                'data': const <Object?>[],
+                'next_after_seq': 0,
+                'has_more': false,
+                'capabilities': const <String, Object?>{
+                  'archive_identity_protocol': 1,
+                },
+              },
+            ),
+          );
+          final sync = HeartbeatProactiveSyncService(
+            chatService: chatService,
+            store: store,
+            api: api,
+          );
+
+          final preparation = await sync.prepareForUserChat(
+            conversation: draft,
+            config: _config(),
+            providerId: 'heartbeat-provider',
+            modelId: 'model-A',
+          );
+
+          expect(preparation.supportsArchiveIdentityProtocol, isTrue);
+          expect(preparation.headers, <String, String>{
+            heartbeatConversationHeaderName: draft.id,
+            heartbeatAssistantHeaderName: 'ayan',
+          });
+          expect(await store.getBinding(draft.id), isNull);
+        },
+      );
+    });
+
+    test(
       'pre-send sync publishes proactive assistant before the user reply',
       () async {
         final conversation = await chatService.createConversation(

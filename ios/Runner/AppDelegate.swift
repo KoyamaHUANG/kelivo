@@ -6,8 +6,8 @@
  import ActivityKit
  import EventKit
 
-private let backgroundRefreshIdentifier = "psyche.kelivo.background-generation.refresh"
-private let backgroundProcessingIdentifier = "psyche.kelivo.background-generation.processing"
+private let backgroundRefreshIdentifier = "com.koyamahuan.kelivo.heartbeat.background-generation.refresh"
+private let backgroundProcessingIdentifier = "com.koyamahuan.kelivo.heartbeat.background-generation.processing"
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {

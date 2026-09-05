@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Kelivo</string>
+	<string>Kelivo Heartbeat</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -21,7 +21,7 @@
 		<string>zh-Hant</string>
 	</array>
 	<key>CFBundleName</key>
-	<string>kelivo</string>
+	<string>Kelivo Heartbeat</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -36,18 +36,18 @@
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>CFBundleURLName</key>
-			<string>psyche.kelivo.oauth-return</string>
+			<string>com.koyamahuan.kelivo.heartbeat.oauth-return</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>kelivo</string>
-				<string>psyche.kelivo</string>
+				<string>kelivo-heartbeat</string>
+				<string>com.koyamahuan.kelivo.heartbeat</string>
 			</array>
 		</dict>
 	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>psyche.kelivo.background-generation.refresh</string>
-		<string>psyche.kelivo.background-generation.processing</string>
+		<string>com.koyamahuan.kelivo.heartbeat.background-generation.refresh</string>
+		<string>com.koyamahuan.kelivo.heartbeat.background-generation.processing</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>

@@ -3,8 +3,11 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:Kelivo/core/models/chat_message.dart';
+import 'package:Kelivo/core/models/message_part.dart';
 import 'package:Kelivo/core/providers/settings_provider.dart';
 import 'package:Kelivo/core/services/api/chat_api_service.dart';
+import 'package:Kelivo/core/services/archive_identity/kelivo_archive_identity.dart';
 import 'package:Kelivo/core/services/proactive_sync/heartbeat_proactive_api.dart';
 import 'package:Kelivo/core/services/proactive_sync/heartbeat_proactive_models.dart';
 import 'package:Kelivo/features/home/services/message_generation_service.dart';
@@ -145,6 +148,80 @@ void main() {
   );
 
   test(
+    'the final chat-completions POST keeps client identity over custom body data',
+    () async {
+      late HttpHeaders headers;
+      late Map<String, dynamic> body;
+      final server = await _server((request) async {
+        headers = request.headers;
+        body =
+            jsonDecode(await utf8.decoder.bind(request).join())
+                as Map<String, dynamic>;
+        request.response.statusCode = HttpStatus.ok;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(
+          jsonEncode(<String, Object?>{
+            'choices': <Object?>[
+              <String, Object?>{
+                'message': <String, Object?>{
+                  'role': 'assistant',
+                  'content': 'ok',
+                },
+                'finish_reason': 'stop',
+              },
+            ],
+          }),
+        );
+        await request.response.close();
+      });
+      addTearDown(() => server.close(force: true));
+
+      final user = ChatMessage(
+        id: 'real-user-message',
+        role: 'user',
+        conversationId: 'conversation-identity',
+        timestamp: DateTime.utc(2026, 8, 30, 15, 8, 3),
+        parts: const <MessagePart>[TextPart('real user text')],
+      );
+      final identity = KelivoArchiveIdentity.forUserSend(
+        userMessage: user,
+        conversationId: 'conversation-identity',
+        assistantId: 'ayan',
+      ).withUserMessageIndex(1);
+
+      final chunks = await ChatApiService.sendMessageStream(
+        config: _config('http://${server.address.address}:${server.port}/v1'),
+        modelId: 'model-A',
+        messages: const <Map<String, dynamic>>[
+          <String, dynamic>{'role': 'user', 'content': 'synthetic memory'},
+          <String, dynamic>{'role': 'user', 'content': 'real user text'},
+          <String, dynamic>{'role': 'user', 'content': 'synthetic after'},
+        ],
+        extraBody: <String, dynamic>{
+          '_kelivo_archive': <String, dynamic>{'version': 999},
+        },
+        archiveIdentity: identity,
+        stream: false,
+      ).toList();
+
+      expect(chunks.isGenerationDone, isTrue);
+      expect(headers.value(KelivoArchiveIdentity.protocolHeaderName), '1');
+      expect(
+        headers.value(KelivoArchiveIdentity.requestIdHeaderName),
+        identity.requestId,
+      );
+      expect(
+        headers.value(KelivoArchiveIdentity.userMessageIdHeaderName),
+        'real-user-message',
+      );
+      final envelope = body['_kelivo_archive'] as Map<String, dynamic>;
+      expect(envelope['version'], 1);
+      expect(envelope['user_message_index'], 1);
+      expect(envelope['user_message_id'], 'real-user-message');
+    },
+  );
+
+  test(
     'ordinary and utility calls have no Heartbeat conversation headers',
     () async {
       final seen = <HttpHeaders>[];
@@ -179,6 +256,19 @@ void main() {
       for (final headers in seen) {
         expect(headers.value(heartbeatConversationHeaderName), isNull);
         expect(headers.value(heartbeatAssistantHeaderName), isNull);
+        expect(headers.value(KelivoArchiveIdentity.protocolHeaderName), isNull);
+        expect(
+          headers.value(KelivoArchiveIdentity.requestIdHeaderName),
+          isNull,
+        );
+        expect(
+          headers.value(KelivoArchiveIdentity.userMessageIdHeaderName),
+          isNull,
+        );
+        expect(
+          headers.value(KelivoArchiveIdentity.parentRequestIdHeaderName),
+          isNull,
+        );
       }
     },
   );

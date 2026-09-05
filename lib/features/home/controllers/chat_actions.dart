@@ -14,6 +14,8 @@ import '../../../core/models/token_usage.dart';
 import '../../../core/providers/assistant_provider.dart';
 import '../../../core/providers/settings_provider.dart';
 import '../../../core/services/api/chat_api_service.dart';
+import '../../../core/services/archive_identity/kelivo_archive_identity.dart';
+import '../../../core/services/proactive_sync/heartbeat_proactive_sync_service.dart';
 import '../../../core/services/api/stream/stream_chunk.dart';
 import '../../../core/services/chat/chat_service.dart';
 import '../../../core/services/ios_background_generation.dart';
@@ -1127,6 +1129,7 @@ class ChatActions {
     // user row is persisted, so a just-arrived proactive assistant message
     // naturally precedes the user's reply in both local order and history.
     Map<String, String>? heartbeatHeaders;
+    var heartbeatPreparation = HeartbeatProactiveChatPreparation.none;
     try {
       final preparation = await messageGenerationService
           .prepareHeartbeatProactiveForUserSend(
@@ -1135,6 +1138,7 @@ class ChatActions {
             providerId: providerKey,
             modelId: modelId,
           );
+      heartbeatPreparation = preparation;
       heartbeatHeaders = preparation.headers;
     } catch (_) {
       // Proactive sync is opportunistic; ordinary chat must continue.
@@ -1175,6 +1179,13 @@ class ChatActions {
     } catch (e) {
       return ChatActionResult.error(e.toString());
     }
+    final archiveIdentity = heartbeatPreparation.supportsArchiveIdentityProtocol
+        ? KelivoArchiveIdentity.forUserSend(
+            userMessage: userMessage,
+            conversationId: conversation.id,
+            assistantId: conversation.assistantId ?? assistantId,
+          )
+        : null;
     _activeAssistantMessages.put(assistantMessage);
     _setConversationLoading(conversation.id, true);
     // The loading guard now owns re-entry exclusion for this conversation.
@@ -1226,6 +1237,7 @@ class ChatActions {
             providerKey: providerKey,
             modelId: modelId,
             approvalService: approvalService,
+            archiveIdentity: archiveIdentity,
             askUserService: askUserService,
           );
 
@@ -1937,6 +1949,7 @@ class ChatActions {
             extraHeaders: ctx.extraHeaders,
             extraBody: ctx.extraBody,
             requestId: conversationId,
+            archiveIdentity: ctx.archiveIdentity,
             allowImagesApiRouting: ctx.allowImagesApiRouting,
             ocrActive: ctx.ocrActive,
           );
@@ -1980,6 +1993,7 @@ class ChatActions {
         extraHeaders: ctx.extraHeaders,
         extraBody: ctx.extraBody,
         requestId: conversationId,
+        archiveIdentity: ctx.archiveIdentity,
         allowImagesApiRouting: ctx.allowImagesApiRouting,
         ocrActive: ctx.ocrActive,
       );

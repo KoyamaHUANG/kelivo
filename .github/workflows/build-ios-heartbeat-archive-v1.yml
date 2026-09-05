@@ -1,0 +1,81 @@
+name: Kelivo Heartbeat Archive V1 unsigned iOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    # Dispatch this workflow explicitly on the dedicated integration branch.
+    if: github.ref == 'refs/heads/release/ios-heartbeat-archive-v1'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout the dispatched commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor 1a88f5cfa01446a1a652b690efc7362d7c3150a9 HEAD
+          python3 scripts/validate_ios_heartbeat_archive.py
+          test -f lib/core/services/archive_identity/kelivo_archive_identity.dart
+          grep -q 'applyContinuationChatCompletionsBody' lib/core/services/api/providers/openai/chat_completions_api.dart
+          echo "Source commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install the previously validated Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          channel: stable
+          cache: true
+
+      - name: Prepare clean dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter clean
+          # The baseline tracks old Xcode build metadata. Do not reuse it.
+          rm -rf ios/build
+          mkdir -p lib/secrets
+          printf '%s\n' "const String siliconflowFallbackKey = '';" > lib/secrets/fallback.dart
+          flutter pub get
+
+      - name: Verify Archive and Proactive contracts
+        run: >-
+          flutter test --no-pub
+          test/archive_identity_protocol_test.dart
+          test/archive_chat_completions_transport_test.dart
+          test/core/services/proactive_sync/heartbeat_proactive_sync_test.dart
+          test/heartbeat_proactive_chat_api_headers_test.dart
+          test/conversation_request_headers_test.dart
+
+      - name: Build unsigned iOS app
+        run: flutter build ios --release --no-codesign
+
+      - name: Validate embedded extension and package IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d build/ios/iphoneos/Runner.app
+          mkdir -p build/ios/heartbeat-archive-package/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ios/heartbeat-archive-package/Payload/
+          python3 scripts/validate_ios_heartbeat_archive.py --app build/ios/heartbeat-archive-package/Payload/Runner.app
+          cd build/ios/heartbeat-archive-package
+          zip -r "$GITHUB_WORKSPACE/Kelivo-Heartbeat-ArchiveV1-unsigned.ipa" Payload
+          cd "$GITHUB_WORKSPACE"
+          shasum -a 256 Kelivo-Heartbeat-ArchiveV1-unsigned.ipa >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload validated unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kelivo-Heartbeat-ArchiveV1-unsigned
+          path: Kelivo-Heartbeat-ArchiveV1-unsigned.ipa
+          if-no-files-found: error
