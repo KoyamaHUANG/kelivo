@@ -883,7 +883,7 @@ class HomePageController extends ChangeNotifier {
       final newMsg = await _saveEditedUserMessageVersion(input, editState);
       if (newMsg == null) return ChatInputSubmissionResult.rejected;
       _exitUserMessageEdit(clearDraft: false);
-      await regenerateAtMessage(newMsg);
+      await regenerateAtMessage(newMsg, allowNewArchiveRequest: true);
       return ChatInputSubmissionResult.sent;
     }
     if (currentConversation == null) {
@@ -952,6 +952,7 @@ class HomePageController extends ChangeNotifier {
   Future<void> regenerateAtMessage(
     ChatMessage message, {
     bool assistantAsNewReply = false,
+    bool allowNewArchiveRequest = false,
   }) async {
     if (currentConversation == null) return;
     _warmupSerial++;
@@ -975,6 +976,7 @@ class HomePageController extends ChangeNotifier {
     final success = await _viewModel.regenerateAtMessage(
       message,
       assistantAsNewReply: assistantAsNewReply,
+      allowNewArchiveRequest: allowNewArchiveRequest,
       allowImagesApiRouting: _mediaController.allowImagesApiRouting,
     );
     if (success) {

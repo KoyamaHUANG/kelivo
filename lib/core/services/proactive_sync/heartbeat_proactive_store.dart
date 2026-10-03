@@ -34,6 +34,31 @@ class HeartbeatProactiveStore {
   String _cursorKey(HeartbeatProactiveBinding binding) =>
       '$_cursorPrefix${_safeKeyPart(binding.providerIdentity)}:${_safeKeyPart(binding.conversationId)}';
 
+  // Only opaque request identifiers are persisted here, never message bodies
+  // or provider credentials. The scope prevents reuse across Gateway bindings.
+  String _archiveRequestKey(String scope, String userMessageId) =>
+      'heartbeat_archive_request_v1:${_safeKeyPart(scope)}:${_safeKeyPart(userMessageId)}';
+
+  Future<String?> getArchiveRequestId(
+    String scope,
+    String userMessageId,
+  ) async {
+    await _ensureLoaded();
+    return preferences.getString(_archiveRequestKey(scope, userMessageId));
+  }
+
+  Future<void> setArchiveRequestId(
+    String scope,
+    String userMessageId,
+    String requestId,
+  ) async {
+    await _ensureLoaded();
+    await preferences.setString(
+      _archiveRequestKey(scope, userMessageId),
+      requestId,
+    );
+  }
+
   Future<bool> hasPositiveCapability(String providerIdentity) async {
     await _ensureLoaded();
     return preferences.getBool(_capabilityKey(providerIdentity)) == true;

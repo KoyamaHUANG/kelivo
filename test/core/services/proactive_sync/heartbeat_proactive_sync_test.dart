@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -252,6 +253,439 @@ void main() {
         isNull,
       );
     });
+  });
+
+  group('shared generation archive identity', () {
+    Future<HeartbeatProactiveSyncService> identityService() async {
+      final api = _FakeApi(
+        (call) => HeartbeatProactiveHttpResponse(
+          statusCode: 200,
+          body: <String, Object?>{
+            'object': 'proactive_event_list',
+            'conversation_id': call.conversationId,
+            'data': const <Object?>[],
+            'next_after_seq': 0,
+            'has_more': false,
+            'capabilities': const <String, Object?>{
+              'archive_identity_protocol': 1,
+            },
+          },
+        ),
+      );
+      return HeartbeatProactiveSyncService(
+        chatService: chatService,
+        store: store,
+        api: api,
+      );
+    }
+
+    test(
+      'normal send, regenerate, manual recovery and store recreation reuse the real root',
+      () async {
+        final conversation = await chatService.createDraftConversation(
+          title: 'fixture',
+          assistantId: 'fixture-assistant',
+        );
+        final user = ChatMessage(
+          id: 'fixture-user',
+          role: 'user',
+          conversationId: conversation.id,
+          content: 'fixture',
+          timestamp: DateTime.utc(2026, 7, 6),
+        );
+        final sync = await identityService();
+        final prep = await sync.prepareForUserChat(
+          conversation: conversation,
+          config: _config(),
+          providerId: 'heartbeat-provider',
+          modelId: 'model-A',
+        );
+        final first = await sync.archiveIdentityForGeneration(
+          preparation: prep,
+          conversation: conversation,
+          config: _config(),
+          userMessage: user,
+          allowNewRequest: true,
+        );
+        expect(first, isNotNull);
+        for (final operation in ['regenerate', 'manual recovery', 'retry']) {
+          final replay = await sync.archiveIdentityForGeneration(
+            preparation: prep,
+            conversation: conversation,
+            config: _config(),
+            userMessage: user,
+            allowNewRequest: false,
+          );
+          expect(replay!.requestId, first!.requestId, reason: operation);
+          expect(replay.userMessageId, user.id);
+          expect(replay.userMessageTime, user.timestamp.toUtc());
+          final body = <String, dynamic>{
+            'messages': [
+              <String, dynamic>{'role': 'user', 'content': 'fixture'},
+            ],
+          };
+          expect(
+            replay
+                .withUserMessageIndex(0)
+                .applyInitialChatCompletionsBody(body),
+            isTrue,
+          );
+          expect(
+            (body['_kelivo_archive'] as Map)['request_id'],
+            first.requestId,
+          );
+          expect(
+            prep.headers![heartbeatConversationHeaderName],
+            conversation.id,
+          );
+          expect(
+            prep.headers![heartbeatAssistantHeaderName],
+            replay.assistantId,
+          );
+        }
+        final reopened = HeartbeatProactiveSyncService(
+          chatService: chatService,
+          store: HeartbeatProactiveStore(preferences: businessPreferences),
+          api: _FakeApi((_) => throw StateError('should not probe')),
+        );
+        final recovered = await reopened.archiveIdentityForGeneration(
+          preparation: prep,
+          conversation: conversation,
+          config: _config(),
+          userMessage: user,
+          allowNewRequest: false,
+        );
+        expect(recovered!.requestId, first!.requestId);
+        final persisted = businessPreferences
+            .getKeys()
+            .where((key) => key.startsWith('heartbeat_archive_request_v1:'))
+            .toList();
+        expect(persisted, hasLength(1));
+        expect(
+          businessPreferences.getString(persisted.single),
+          first.requestId,
+        );
+      },
+    );
+
+    test(
+      'edited user revision gets its own root and subsequent regeneration keeps it',
+      () async {
+        final conversation = await chatService.createDraftConversation(
+          title: 'fixture',
+          assistantId: 'fixture-assistant',
+        );
+        final sync = await identityService();
+        final prep = await sync.prepareForUserChat(
+          conversation: conversation,
+          config: _config(),
+          providerId: 'heartbeat-provider',
+          modelId: 'model-A',
+          syncBeforeSend: false,
+        );
+        final original = ChatMessage(
+          id: 'fixture-user-v0',
+          role: 'user',
+          conversationId: conversation.id,
+          content: 'fixture',
+          groupId: 'fixture-group',
+          version: 0,
+        );
+        final edited = original.copyWith(
+          id: 'fixture-user-v1',
+          content: 'edited fixture',
+          version: 1,
+        );
+        final first = await sync.archiveIdentityForGeneration(
+          preparation: prep,
+          conversation: conversation,
+          config: _config(),
+          userMessage: original,
+          allowNewRequest: true,
+        );
+        final edit = await sync.archiveIdentityForGeneration(
+          preparation: prep,
+          conversation: conversation,
+          config: _config(),
+          userMessage: edited,
+          allowNewRequest: true,
+        );
+        final replay = await sync.archiveIdentityForGeneration(
+          preparation: prep,
+          conversation: conversation,
+          config: _config(),
+          userMessage: edited,
+          allowNewRequest: false,
+        );
+        expect(edit!.requestId, isNot(first!.requestId));
+        expect(edit.userMessageId, edited.id);
+        expect(replay!.requestId, edit.requestId);
+      },
+    );
+
+    test(
+      'legacy recovery never invents a parent or a new root for an already sent message',
+      () async {
+        final conversation = await chatService.createDraftConversation(
+          title: 'fixture',
+          assistantId: 'fixture-assistant',
+        );
+        final sync = await identityService();
+        final prep = await sync.prepareForUserChat(
+          conversation: conversation,
+          config: _config(),
+          providerId: 'heartbeat-provider',
+          modelId: 'model-A',
+          syncBeforeSend: false,
+        );
+        final user = ChatMessage(
+          id: 'fixture-old',
+          role: 'user',
+          conversationId: conversation.id,
+          content: 'fixture',
+        );
+        await expectLater(
+          sync.archiveIdentityForGeneration(
+            preparation: prep,
+            conversation: conversation,
+            config: _config(),
+            userMessage: user,
+            allowNewRequest: false,
+          ),
+          throwsStateError,
+        );
+        expect(
+          businessPreferences.getKeys().where(
+            (key) => key.startsWith('heartbeat_archive_request_v1:'),
+          ),
+          isEmpty,
+        );
+      },
+    );
+
+    test(
+      'cross-conversation messages and provider endpoint switches cannot reuse another scope',
+      () async {
+        final conversation = await chatService.createDraftConversation(
+          title: 'fixture',
+          assistantId: 'fixture-assistant',
+        );
+        final sync = await identityService();
+        final prep = await sync.prepareForUserChat(
+          conversation: conversation,
+          config: _config(),
+          providerId: 'heartbeat-provider',
+          modelId: 'model-A',
+          syncBeforeSend: false,
+        );
+        final user = ChatMessage(
+          id: 'fixture-user',
+          role: 'user',
+          conversationId: conversation.id,
+          content: 'fixture',
+        );
+        await expectLater(
+          sync.archiveIdentityForGeneration(
+            preparation: prep,
+            conversation: conversation,
+            config: _config(),
+            userMessage: user.copyWith(conversationId: 'other'),
+            allowNewRequest: true,
+          ),
+          throwsStateError,
+        );
+        await sync.archiveIdentityForGeneration(
+          preparation: prep,
+          conversation: conversation,
+          config: _config(),
+          userMessage: user,
+          allowNewRequest: true,
+        );
+        await expectLater(
+          sync.archiveIdentityForGeneration(
+            preparation: prep,
+            conversation: conversation,
+            config: _config(baseUrl: 'https://other.example/v1'),
+            userMessage: user,
+            allowNewRequest: false,
+          ),
+          throwsStateError,
+        );
+      },
+    );
+
+    test(
+      'regeneration capability check skips proactive pull and binding writes',
+      () async {
+        final conversation = await chatService.createConversation(
+          title: 'fixture',
+          assistantId: 'fixture-assistant',
+        );
+        final calls = <String>[];
+        final api = _FakeApi((call) {
+          calls.add(call.conversationId);
+          return HeartbeatProactiveHttpResponse(
+            statusCode: 200,
+            body: <String, Object?>{
+              'object': 'proactive_event_list',
+              'data': const <Object?>[],
+              'capabilities': const <String, Object?>{
+                'archive_identity_protocol': 1,
+              },
+            },
+          );
+        });
+        final sync = HeartbeatProactiveSyncService(
+          chatService: chatService,
+          store: store,
+          api: api,
+        );
+        final prep = await sync.prepareForUserChat(
+          conversation: conversation,
+          config: _config(),
+          providerId: 'heartbeat-provider',
+          modelId: 'model-A',
+          syncBeforeSend: false,
+        );
+        expect(prep.supportsArchiveIdentityProtocol, isTrue);
+        expect(calls, ['__kelivo_capability_probe__']);
+        expect(await store.getBinding(conversation.id), isNull);
+      },
+    );
+
+    test(
+      'archive capability survives a proactive-only downgrade during normal send',
+      () async {
+        final conversation = await chatService.createConversation(
+          title: 'fixture',
+          assistantId: 'fixture-assistant',
+        );
+        final api = _FakeApi(
+          (call) => call.conversationId == '__kelivo_capability_probe__'
+              ? HeartbeatProactiveHttpResponse(
+                  statusCode: 200,
+                  body: <String, Object?>{
+                    'object': 'proactive_event_list',
+                    'data': const <Object?>[],
+                    'capabilities': const <String, Object?>{
+                      'archive_identity_protocol': 1,
+                    },
+                  },
+                )
+              : const HeartbeatProactiveHttpResponse(
+                  statusCode: 404,
+                  body: <String, Object?>{},
+                ),
+        );
+        final sync = HeartbeatProactiveSyncService(
+          chatService: chatService,
+          store: store,
+          api: api,
+        );
+        final prep = await sync.prepareForUserChat(
+          conversation: conversation,
+          config: _config(),
+          providerId: 'heartbeat-provider',
+          modelId: 'model-A',
+        );
+        expect(prep.supportsArchiveIdentityProtocol, isTrue);
+        expect(
+          prep.headers![heartbeatAssistantHeaderName],
+          'fixture-assistant',
+        );
+      },
+    );
+
+    test(
+      'stored request scope excludes URL credentials, query keys, fragments and message text',
+      () async {
+        final conversation = await chatService.createDraftConversation(
+          title: 'fixture',
+          assistantId: 'fixture-assistant',
+        );
+        final sync = await identityService();
+        final config = _config(
+          baseUrl:
+              'https://fixture-login:fixture-password@heartbeat.example/v1?api_key=fixture-query#fixture-fragment',
+        );
+        final prep = await sync.prepareForUserChat(
+          conversation: conversation,
+          config: config,
+          providerId: 'heartbeat-provider',
+          modelId: 'model-A',
+          syncBeforeSend: false,
+        );
+        final user = ChatMessage(
+          id: 'fixture-user',
+          role: 'user',
+          conversationId: conversation.id,
+          content: 'fixture-private-content',
+        );
+        await sync.archiveIdentityForGeneration(
+          preparation: prep,
+          conversation: conversation,
+          config: config,
+          userMessage: user,
+          allowNewRequest: true,
+        );
+        final key = businessPreferences.getKeys().singleWhere(
+          (key) => key.startsWith('heartbeat_archive_request_v1:'),
+        );
+        final scope = utf8.decode(base64Url.decode(key.split(':')[1]));
+        for (final sensitive in [
+          'fixture-login',
+          'fixture-password',
+          'fixture-query',
+          'fixture-fragment',
+          'fixture-private-content',
+        ]) {
+          expect(scope, isNot(contains(sensitive)));
+        }
+      },
+    );
+
+    test(
+      'unconfirmed capability and unbound assistant do not gain a private identity',
+      () async {
+        final conversation = await chatService.createDraftConversation(
+          title: 'fixture',
+        );
+        final sync = await identityService();
+        final user = ChatMessage(
+          id: 'fixture-user',
+          role: 'user',
+          conversationId: conversation.id,
+          content: 'fixture',
+        );
+        expect(
+          await sync.archiveIdentityForGeneration(
+            preparation: HeartbeatProactiveChatPreparation.none,
+            conversation: conversation,
+            config: _config(),
+            userMessage: user,
+            allowNewRequest: true,
+          ),
+          isNull,
+        );
+        final prep = await sync.prepareForUserChat(
+          conversation: conversation,
+          config: _config(),
+          providerId: 'heartbeat-provider',
+          modelId: 'model-A',
+          syncBeforeSend: false,
+        );
+        expect(
+          await sync.archiveIdentityForGeneration(
+            preparation: prep,
+            conversation: conversation,
+            config: _config(),
+            userMessage: user,
+            allowNewRequest: true,
+          ),
+          isNull,
+        );
+      },
+    );
   });
 
   group('capability and binding', () {

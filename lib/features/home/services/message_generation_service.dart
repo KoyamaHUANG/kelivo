@@ -70,6 +70,25 @@ Map<String, String>? buildConversationRequestHeaders({
   return headers.isEmpty ? null : headers;
 }
 
+/// Map only the real persisted revision after injections and context trimming.
+/// Never silently drop Protocol 1 or point it at a synthetic user message.
+KelivoArchiveIdentity? mapArchiveIdentityToApiMessages(
+  KelivoArchiveIdentity? identity,
+  List<Map<String, dynamic>> apiMessages,
+) {
+  if (identity == null) return null;
+  final index = apiMessages.indexWhere(
+    (message) =>
+        message[MessageBuilderService.internalRevisionIdKey] ==
+            identity.userMessageId &&
+        message['role'] == 'user',
+  );
+  if (index < 0) {
+    throw StateError('archive_generation_user_message_missing_from_context');
+  }
+  return identity.withUserMessageIndex(index);
+}
+
 /// Result of preparing a message generation
 class PreparedGeneration {
   final List<Map<String, dynamic>> apiMessages;
@@ -243,19 +262,10 @@ class MessageGenerationService {
         model: modelId,
       );
     }
-    final archiveIdentityForRequest = archiveIdentity == null
-        ? null
-        : (() {
-            final index = apiMessages.indexWhere(
-              (message) =>
-                  (message[MessageBuilderService.internalRevisionIdKey] ?? '')
-                      .toString() ==
-                  archiveIdentity.userMessageId,
-            );
-            return index < 0
-                ? null
-                : archiveIdentity.withUserMessageIndex(index);
-          })();
+    final archiveIdentityForRequest = mapArchiveIdentityToApiMessages(
+      archiveIdentity,
+      apiMessages,
+    );
     messageBuilderService.stripInternalRevisionIds(apiMessages);
 
     // Prepare tools
@@ -413,6 +423,7 @@ class MessageGenerationService {
     required SettingsProvider settings,
     required String providerId,
     required String modelId,
+    bool syncBeforeSend = true,
   }) {
     final service = heartbeatProactiveSyncService;
     if (service == null) {
@@ -425,7 +436,52 @@ class MessageGenerationService {
       config: settings.getProviderConfig(providerId),
       providerId: providerId,
       modelId: modelId,
+      syncBeforeSend: syncBeforeSend,
     );
+  }
+
+  /// One identity path for send, regenerate, edited resend and manual recovery.
+  Future<({Map<String, String>? headers, KelivoArchiveIdentity? identity})>
+  prepareHeartbeatGenerationIdentity({
+    required Conversation conversation,
+    required SettingsProvider settings,
+    required String providerId,
+    required String modelId,
+    required List<ChatMessage> messages,
+    required Map<String, int> versionSelections,
+    bool allowNewRequest = false,
+    HeartbeatProactiveChatPreparation? preparation,
+  }) async {
+    final service = heartbeatProactiveSyncService;
+    if (service == null) return (headers: null, identity: null);
+    final confirmed =
+        preparation ??
+        await prepareHeartbeatProactiveForUserSend(
+          conversation: conversation,
+          settings: settings,
+          providerId: providerId,
+          modelId: modelId,
+          syncBeforeSend: false,
+        );
+    final selected = messageBuilderService.collapseVersions(
+      messages,
+      versionSelections,
+    );
+    ChatMessage? userMessage;
+    for (final message in selected.reversed) {
+      if (message.role == 'user') {
+        userMessage = message;
+        break;
+      }
+    }
+    final identity = await service.archiveIdentityForGeneration(
+      preparation: confirmed,
+      conversation: conversation,
+      config: settings.getProviderConfig(providerId),
+      userMessage: userMessage,
+      allowNewRequest: allowNewRequest,
+    );
+    return (headers: confirmed.headers, identity: identity);
   }
 
   /// Build structured parts for a persisted user message.

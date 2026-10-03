@@ -33,11 +33,12 @@ class KelivoArchiveIdentity {
     required ChatMessage userMessage,
     required String conversationId,
     String? assistantId,
+    String? requestId,
   }) {
     return KelivoArchiveIdentity._(
       conversationId: conversationId,
       assistantId: _optional(assistantId),
-      requestId: const Uuid().v4(),
+      requestId: requestId ?? const Uuid().v4(),
       userMessageId: userMessage.id,
       userMessageTime: userMessage.timestamp.toUtc(),
       userArchiveContent: _safeArchiveContent(userMessage),

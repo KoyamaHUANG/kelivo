@@ -46,7 +46,8 @@ jobs:
           rm -rf ios/build
           mkdir -p lib/secrets
           printf '%s\n' "const String siliconflowFallbackKey = '';" > lib/secrets/fallback.dart
-          flutter pub get
+          flutter pub get --enforce-lockfile
+          shasum -a 256 pubspec.lock >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify Archive and Proactive contracts
         run: >-
@@ -56,6 +57,8 @@ jobs:
           test/core/services/proactive_sync/heartbeat_proactive_sync_test.dart
           test/heartbeat_proactive_chat_api_headers_test.dart
           test/conversation_request_headers_test.dart
+          test/message_generation_identity_test.dart
+          test/features/home/controllers/chat_actions_regeneration_context_test.dart
 
       - name: Build unsigned iOS app
         run: flutter build ios --release --no-codesign

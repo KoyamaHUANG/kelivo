@@ -1128,7 +1128,6 @@ class ChatActions {
     // This is the only user-chat send path. The bounded sync runs before the
     // user row is persisted, so a just-arrived proactive assistant message
     // naturally precedes the user's reply in both local order and history.
-    Map<String, String>? heartbeatHeaders;
     var heartbeatPreparation = HeartbeatProactiveChatPreparation.none;
     try {
       final preparation = await messageGenerationService
@@ -1139,7 +1138,6 @@ class ChatActions {
             modelId: modelId,
           );
       heartbeatPreparation = preparation;
-      heartbeatHeaders = preparation.headers;
     } catch (_) {
       // Proactive sync is opportunistic; ordinary chat must continue.
     }
@@ -1179,13 +1177,6 @@ class ChatActions {
     } catch (e) {
       return ChatActionResult.error(e.toString());
     }
-    final archiveIdentity = heartbeatPreparation.supportsArchiveIdentityProtocol
-        ? KelivoArchiveIdentity.forUserSend(
-            userMessage: userMessage,
-            conversationId: conversation.id,
-            assistantId: conversation.assistantId ?? assistantId,
-          )
-        : null;
     _activeAssistantMessages.put(assistantMessage);
     _setConversationLoading(conversation.id, true);
     // The loading guard now owns re-entry exclusion for this conversation.
@@ -1226,6 +1217,17 @@ class ChatActions {
         userMessage,
         assistantMessage,
       ];
+      final requestIdentity = await messageGenerationService
+          .prepareHeartbeatGenerationIdentity(
+            conversation: conversation,
+            settings: settings,
+            providerId: providerKey,
+            modelId: modelId,
+            messages: apiContextMessages,
+            versionSelections: _versionSelections,
+            allowNewRequest: true,
+            preparation: heartbeatPreparation,
+          );
       final prepared = await messageGenerationService
           .prepareApiMessagesWithInjections(
             messages: apiContextMessages,
@@ -1237,7 +1239,7 @@ class ChatActions {
             providerKey: providerKey,
             modelId: modelId,
             approvalService: approvalService,
-            archiveIdentity: archiveIdentity,
+            archiveIdentity: requestIdentity.identity,
             askUserService: askUserService,
           );
 
@@ -1264,7 +1266,7 @@ class ChatActions {
         enableReasoning: enableReasoning,
         generateTitleOnFinish: true,
         generationRunId: generationRunId,
-        heartbeatHeaders: heartbeatHeaders,
+        heartbeatHeaders: requestIdentity.headers,
       );
 
       if (!_activeAssistantMessages.isActive(assistantMessage)) {
@@ -1347,6 +1349,7 @@ class ChatActions {
     required Conversation conversation,
     bool assistantAsNewReply = false,
     bool allowImagesApiRouting = true,
+    bool allowNewArchiveRequest = false,
   }) async {
     final claimToken = ++_sendInFlightClaimSerial;
     if (isSendInFlight(conversation.id)) {
@@ -1359,6 +1362,7 @@ class ChatActions {
         conversation: conversation,
         assistantAsNewReply: assistantAsNewReply,
         allowImagesApiRouting: allowImagesApiRouting,
+        allowNewArchiveRequest: allowNewArchiveRequest,
       );
     } finally {
       if (_sendInFlightClaims[conversation.id] == claimToken) {
@@ -1372,6 +1376,7 @@ class ChatActions {
     required Conversation conversation,
     bool assistantAsNewReply = false,
     bool allowImagesApiRouting = true,
+    bool allowNewArchiveRequest = false,
   }) async {
     // Avoid using BuildContext across async gaps (this class holds a BuildContext).
     final settings = contextProvider.read<SettingsProvider>();
@@ -1450,6 +1455,23 @@ class ChatActions {
       maxRawTruncateIndex: versioning.lastKeep,
     )) {
       return ChatActionResult.error('audio_attachment_unsupported');
+    }
+
+    late final ({Map<String, String>? headers, KelivoArchiveIdentity? identity})
+    requestIdentity;
+    try {
+      requestIdentity = await messageGenerationService
+          .prepareHeartbeatGenerationIdentity(
+            conversation: conversation,
+            settings: settings,
+            providerId: providerKey,
+            modelId: modelId,
+            messages: projectedMessages,
+            versionSelections: _versionSelections,
+            allowNewRequest: allowNewArchiveRequest,
+          );
+    } catch (e) {
+      return ChatActionResult.error(e.toString());
     }
 
     if (shouldPhysicallyRemoveRegenerationTail(
@@ -1570,6 +1592,7 @@ class ChatActions {
             modelId: modelId,
             approvalService: regenApprovalService,
             askUserService: regenAskUserService,
+            archiveIdentity: requestIdentity.identity,
           );
 
       // Build user image paths
@@ -1595,6 +1618,7 @@ class ChatActions {
         enableReasoning: enableReasoning,
         generateTitleOnFinish: false,
         generationRunId: begin.runId,
+        heartbeatHeaders: requestIdentity.headers,
       );
 
       if (!_activeAssistantMessages.isActive(assistantMessage)) {
@@ -1662,6 +1686,22 @@ class ChatActions {
     final providerKey = modelConfig.providerKey!;
     final modelId = modelConfig.modelId!;
 
+    late final ({Map<String, String>? headers, KelivoArchiveIdentity? identity})
+    requestIdentity;
+    try {
+      requestIdentity = await messageGenerationService
+          .prepareHeartbeatGenerationIdentity(
+            conversation: conversation,
+            settings: settings,
+            providerId: providerKey,
+            modelId: modelId,
+            messages: completeMessages,
+            versionSelections: _versionSelections,
+          );
+    } catch (e) {
+      return ChatActionResult.error(e.toString());
+    }
+
     final streamingMessage = _messages[visibleIndex].copyWith(
       isStreaming: true,
     );
@@ -1693,6 +1733,7 @@ class ChatActions {
             modelId: modelId,
             approvalService: approvalService,
             askUserService: askUserService,
+            archiveIdentity: requestIdentity.identity,
           );
 
       final userImagePaths = messageGenerationService.buildUserImagePaths(
@@ -1715,6 +1756,7 @@ class ChatActions {
         supportsReasoning: supportsReasoning,
         enableReasoning: enableReasoning,
         generateTitleOnFinish: false,
+        heartbeatHeaders: requestIdentity.headers,
       );
 
       if (!_activeAssistantMessages.isActive(streamingMessage)) {

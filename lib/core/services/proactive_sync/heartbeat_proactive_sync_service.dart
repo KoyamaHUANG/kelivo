@@ -6,6 +6,7 @@ import '../../models/chat_message.dart';
 import '../../models/conversation.dart';
 import '../../providers/settings_provider.dart';
 import '../chat/chat_service.dart';
+import '../archive_identity/kelivo_archive_identity.dart';
 import 'heartbeat_proactive_api.dart';
 import 'heartbeat_proactive_models.dart';
 import 'heartbeat_proactive_store.dart';
@@ -190,6 +191,52 @@ class HeartbeatProactiveSyncService {
     modelId: modelId,
   )).proactiveSync;
 
+  /// Replays the real user identity for regeneration/manual recovery. Never
+  /// invent a root request for an old message whose original id is unavailable.
+  Future<KelivoArchiveIdentity?> archiveIdentityForGeneration({
+    required HeartbeatProactiveChatPreparation preparation,
+    required Conversation conversation,
+    required ProviderConfig config,
+    required ChatMessage? userMessage,
+    required bool allowNewRequest,
+  }) async {
+    if (!preparation.supportsArchiveIdentityProtocol) return null;
+    final headers = preparation.headers;
+    final assistantId = headers?[heartbeatAssistantHeaderName];
+    if (assistantId == null || assistantId.trim().isEmpty) return null;
+    if (userMessage == null) {
+      throw StateError('archive_generation_user_message_missing');
+    }
+    if (headers?[heartbeatConversationHeaderName] != conversation.id ||
+        userMessage.role != 'user' ||
+        userMessage.conversationId != conversation.id) {
+      throw StateError('archive_generation_binding_mismatch');
+    }
+    final endpoint = Uri.parse(
+      normalizeHeartbeatBaseUrl(config.baseUrl),
+    ).replace(userInfo: '', query: '', fragment: '').toString();
+    final scope =
+        '${heartbeatProviderIdentity(config.id, endpoint)}|${conversation.id}|$assistantId';
+    final recorded = await store.getArchiveRequestId(scope, userMessage.id);
+    if (recorded == null && !allowNewRequest) {
+      throw StateError('历史检索身份未保存：请在当前会话发送一条新消息后再重新生成。');
+    }
+    final identity = KelivoArchiveIdentity.forUserSend(
+      userMessage: userMessage,
+      conversationId: conversation.id,
+      assistantId: assistantId,
+      requestId: recorded,
+    );
+    if (recorded == null) {
+      await store.setArchiveRequestId(
+        scope,
+        userMessage.id,
+        identity.requestId,
+      );
+    }
+    return identity;
+  }
+
   /// Runs immediately before a real user send. Capability probing is valid for
   /// a newly-created draft conversation because its id is already stable. Only
   /// proactive binding/pull remains restricted to persisted conversations.
@@ -198,6 +245,7 @@ class HeartbeatProactiveSyncService {
     required ProviderConfig config,
     required String providerId,
     required String modelId,
+    bool syncBeforeSend = true,
   }) async {
     final started = _now();
     final capabilities = await gatewayCapabilities(
@@ -214,7 +262,8 @@ class HeartbeatProactiveSyncService {
       if (_cleanOptional(conversation.assistantId) case final assistantId?)
         heartbeatAssistantHeaderName: assistantId,
     };
-    if (!_isPersistentExistingConversation(conversation.id)) {
+    if (!syncBeforeSend ||
+        !_isPersistentExistingConversation(conversation.id)) {
       if (!capabilities.supportsArchiveIdentityProtocol) {
         return HeartbeatProactiveChatPreparation.none;
       }
@@ -254,7 +303,8 @@ class HeartbeatProactiveSyncService {
         _log('pre_send_sync_timeout_or_error');
       }
     }
-    if (!await supportsProactiveSync(config: config, modelId: modelId)) {
+    if (!await supportsProactiveSync(config: config, modelId: modelId) &&
+        !capabilities.supportsArchiveIdentityProtocol) {
       return HeartbeatProactiveChatPreparation.none;
     }
     return HeartbeatProactiveChatPreparation(

@@ -511,6 +511,7 @@ class HomeViewModel extends ChangeNotifier {
   Future<bool> regenerateAtMessage(
     ChatMessage message, {
     bool assistantAsNewReply = false,
+    bool allowNewArchiveRequest = false,
     bool allowImagesApiRouting = true,
   }) async {
     final conversation = currentConversation;
@@ -528,6 +529,7 @@ class HomeViewModel extends ChangeNotifier {
       message: message,
       conversation: conversation,
       assistantAsNewReply: assistantAsNewReply,
+      allowNewArchiveRequest: allowNewArchiveRequest,
       allowImagesApiRouting: allowImagesApiRouting,
     );
 
